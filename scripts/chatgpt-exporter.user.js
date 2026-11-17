@@ -3,7 +3,7 @@
 // @name:zh-CN   ChatGPT 通用导出器（Markdown 支持）
 // @name:zh-TW   ChatGPT 通用匯出器（Markdown 支援）
 // @namespace    https://github.com/FirstPotato/ai-chat-exporters
-// @version      1.3.6.2
+// @version      1.3.6.3
 // @description  Export ChatGPT conversations from personal, project, and team workspaces to local ZIP archives with JSON, Markdown, and assets.
 // @description:zh-CN  将 ChatGPT 个人、项目和团队空间对话导出为本地 ZIP，包含 JSON、Markdown 和资源文件。
 // @description:zh-TW  將 ChatGPT 個人、專案和團隊工作區對話匯出為本機 ZIP，包含 JSON、Markdown 和資源檔案。
@@ -2200,6 +2200,7 @@
         };
 
         renderBase();
+        styleExportDialog(overlay, dialog);
         overlay.appendChild(dialog);
         document.body.appendChild(overlay);
         overlay.onclick = (e) => { if (e.target === overlay) closeDialog(); };
@@ -2413,25 +2414,164 @@
             }
         };
 
+        styleExportDialog(overlay, dialog);
         overlay.appendChild(dialog);
         document.body.appendChild(overlay);
         overlay.onclick = (e) => { if (e.target === overlay) closeDialog(); };
         renderStep('initial');
     }
 
+
+  function createExportDock(id, zIndex, caption = "导出") {
+    const host = document.createElement("div");
+    host.id = id;
+    const shadow = host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = `
+      :host { all: initial; position: fixed; right: max(16px, env(safe-area-inset-right));
+        bottom: max(16px, env(safe-area-inset-bottom)); z-index: ${zIndex};
+        font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color-scheme: light; }
+      .dock-stack { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+      .dock-launcher { all: unset; box-sizing: border-box; display: inline-flex; align-items: center;
+        justify-content: center; gap: 6px; min-height: 36px; padding: 0 12px;
+        border: 1px solid #ffffff26; border-radius: 999px; background: #252629; color: #fff;
+        font: 600 12px/1 system-ui, sans-serif; cursor: pointer; user-select: none;
+        box-shadow: 0 3px 12px #0002; }
+      .dock-launcher:hover, .dock-launcher[aria-expanded="true"] { background: #3f4146; }
+      .dock-launcher svg { width: 15px; height: 15px; flex: none; }
+      .dock-menu { box-sizing: border-box; display: flex; flex-direction: column; flex-wrap: nowrap; gap: 4px;
+        width: min(224px, calc(100vw - 32px)); max-height: calc(100dvh - 100px); overflow: auto;
+        padding: 6px; background: #fff; color: #1f2937; border: 1px solid #e5e7eb;
+        border-radius: 14px; box-shadow: 0 8px 28px #0002; }
+      .dock-menu[hidden] { display: none; }
+      .dock-menu > button { all: unset; box-sizing: border-box; display: flex;
+        align-items: center; justify-content: flex-start; gap: 8px; width: 100%; min-height: 38px;
+        padding: 8px 10px; border-radius: 8px; background: transparent; color: #1f2937;
+        font: 500 13px/1.45 system-ui, sans-serif; cursor: pointer; text-align: left; }
+      .dock-menu > button:hover { background: #f3f4f6; }
+      .dock-menu > button:disabled { opacity: .45; cursor: default; }
+      .dock-launcher:focus-visible, .dock-menu > button:focus-visible {
+        outline: 2px solid #059669; outline-offset: 3px; }
+      @media (pointer: coarse) { .dock-launcher { min-height: 44px; } }
+    `;
+    const stack = document.createElement("div");
+    stack.className = "dock-stack";
+    const menu = document.createElement("div");
+    menu.className = "dock-menu";
+    menu.id = id + "-menu";
+    menu.hidden = true;
+    menu.setAttribute("role", "group");
+    menu.setAttribute("aria-label", caption);
+    const launcher = document.createElement("button");
+    launcher.type = "button";
+    launcher.className = "dock-launcher";
+    launcher.title = caption;
+    launcher.setAttribute("aria-label", caption);
+    launcher.setAttribute("aria-controls", menu.id);
+    launcher.setAttribute("aria-expanded", "false");
+    const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    icon.setAttribute("viewBox", "0 0 24 24");
+    icon.setAttribute("fill", "none");
+    icon.setAttribute("stroke", "currentColor");
+    icon.setAttribute("stroke-width", "1.8");
+    icon.setAttribute("stroke-linecap", "round");
+    icon.setAttribute("stroke-linejoin", "round");
+    icon.setAttribute("aria-hidden", "true");
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    line.setAttribute("d", "M12 3v12m-4-4 4 4 4-4M5 16v4h14v-4");
+    icon.append(line);
+    const text = document.createElement("span");
+    text.textContent = caption;
+    launcher.append(icon, text);
+    const dock = { host, shadow, stack, menu, launcher, text, style, onClose: null };
+    dock.setExpanded = (expanded, focus = false) => {
+      menu.hidden = !expanded;
+      launcher.setAttribute("aria-expanded", String(expanded));
+      if (!expanded) dock.onClose?.();
+      if (focus) (expanded ? menu.querySelector("button:not(:disabled)") : launcher)?.focus();
+    };
+    launcher.addEventListener("click", () => dock.setExpanded(menu.hidden, true));
+    document.addEventListener("pointerdown", event => {
+      if (!menu.hidden && !event.composedPath().includes(host)) dock.setExpanded(false);
+    });
+    shadow.addEventListener("keydown", event => {
+      if (event.key === "Escape" && !menu.hidden) {
+        event.preventDefault();
+        event.stopPropagation();
+        dock.setExpanded(false, true);
+      }
+    });
+    stack.append(menu, launcher);
+    shadow.append(style, stack);
+    return dock;
+  }
+
+    function styleExportDialog(overlay, dialog) {
+        const style = document.createElement('style');
+        style.textContent = `
+            #export-dialog-overlay { background: #11182766 !important; padding: 16px; box-sizing: border-box; }
+            #export-dialog { background: #fff !important; color: #1f2937 !important; color-scheme: light;
+                border: 1px solid #e5e7eb; border-radius: 16px !important; padding: 24px !important;
+                max-width: 100%; max-height: 88dvh; overflow: auto;
+                box-shadow: 0 16px 48px #0003 !important; font: 14px/1.5 system-ui, sans-serif !important; }
+            #export-dialog h2 { font-size: 18px !important; font-weight: 650; color: #111827; }
+            #export-dialog button { box-sizing: border-box; min-height: 36px; padding: 8px 12px !important;
+                background: #f9fafb !important; color: #374151 !important; border: 1px solid #d1d5db !important;
+                border-radius: 8px !important; font: 500 13px/1.4 system-ui, sans-serif !important; }
+            #export-dialog button:hover:not(:disabled) { filter: brightness(.96); }
+            #export-dialog button:disabled { opacity: .45; cursor: default !important; }
+            #export-dialog #export-selected-btn, #export-dialog #start-team-export-btn,
+            #export-dialog #select-personal-btn, #export-dialog #select-project-btn,
+            #export-dialog #select-team-btn { background: #047857 !important; color: #fff !important;
+                border-color: #047857 !important; }
+            #export-dialog input:not([type=checkbox]):not([type=radio]), #export-dialog select {
+                background: #fff !important; color: #1f2937 !important; border: 1px solid #d1d5db !important;
+                border-radius: 8px !important; min-width: 0; max-width: 100%;
+                padding: 8px !important; font: 13px/1.4 system-ui, sans-serif; }
+            #export-dialog input[type=checkbox], #export-dialog input[type=radio] { accent-color: #047857; }
+            #export-dialog :is(button, input, select):focus-visible { outline: 2px solid #059669; outline-offset: 2px; }
+            #export-dialog > div { flex-wrap: wrap; gap: 8px; }
+            #export-dialog #conv-list { border: 1px solid #e5e7eb; border-radius: 10px !important; }
+            #export-dialog #conv-list label:focus-within { outline: 2px solid #059669; outline-offset: -2px; }
+            @media (max-width: 520px) { #export-dialog { padding: 16px !important; }
+                #export-dialog #conv-search { flex-basis: 100% !important; } }
+        `;
+        overlay.appendChild(style);
+        dialog.setAttribute('role', 'dialog');
+        dialog.setAttribute('aria-modal', 'true');
+        dialog.setAttribute('aria-label', t('button.export'));
+        queueMicrotask(() => dialog.querySelector('input:not(:disabled), button:not(:disabled)')?.focus());
+        overlay.addEventListener('keydown', event => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                overlay.remove();
+                document.getElementById('gpt-rescue-btn')?.shadowRoot?.querySelector('.dock-launcher')?.focus();
+            }
+            if (event.key === 'Tab') {
+                const controls = [...dialog.querySelectorAll('button, input, select, [tabindex="0"]')]
+                    .filter(element => !element.disabled && element.getClientRects().length);
+                const first = controls[0];
+                const last = controls[controls.length - 1];
+                if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+                else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+            }
+        });
+    }
+
     function addBtn() {
         if (document.getElementById('gpt-rescue-btn')) return;
-        const b = document.createElement('button');
-        b.id = 'gpt-rescue-btn';
-        b.textContent = t('button.export');
-        Object.assign(b.style, {
-            position: 'fixed', bottom: '24px', right: '24px', zIndex: '99997',
-            padding: '10px 14px', borderRadius: '8px', border: 'none', cursor: 'pointer',
-            fontWeight: 'bold', background: '#10a37f', color: '#fff', fontSize: '14px',
-            boxShadow: '0 3px 12px rgba(0,0,0,.15)', userSelect: 'none'
-        });
-        b.onclick = showExportDialog;
-        document.body.appendChild(b);
+        const chinese = /[\u3400-\u9fff]/.test(t('button.export'));
+        const dock = createExportDock('gpt-rescue-btn', 99997, chinese ? '导出' : 'Export');
+        const action = (label, callback) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = label;
+            button.addEventListener('click', () => { dock.setExpanded(false); callback(); });
+            dock.menu.append(button);
+        };
+        action(chinese ? '选择个人会话' : 'Select personal chats', () => showConversationPicker({ mode: 'personal' }));
+        action(chinese ? '更多导出选项…' : 'More export options…', showExportDialog);
+        document.body.appendChild(dock.host);
     }
 
     // --- 脚本启动 ---

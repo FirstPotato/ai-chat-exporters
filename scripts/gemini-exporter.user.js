@@ -2,7 +2,7 @@
 // @name         Gemini Universal Batch Exporter
 // @name:zh-CN   Gemini 通用导出器
 // @namespace    https://github.com/FirstPotato/ai-chat-exporters
-// @version      2.1.1
+// @version      2.1.2
 // @description  Export Gemini chats as Markdown and raw JSON with chat selection, optional images, and an export report.
 // @description:zh-CN  导出 Gemini 会话为 Markdown 和原始 JSON，支持选择会话、筛选、可选图片下载及导出报告。
 // @author       dikelps, Antigravity
@@ -658,7 +658,6 @@
   const HISTORY_PAGE_SIZE = 50;
   const LIST_RPC_ID = "MaZiqc";
   const PREFERENCE_KEYS = Object.freeze({
-    collapsed: "ui.collapsed",
     includeMetadata: "export.includeMetadata",
     includeOutline: "export.includeOutline",
     downloadImages: "export.downloadImages",
@@ -1024,10 +1023,94 @@
     setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000);
   }
 
+
+  function createExportDock(id, zIndex, caption = "导出") {
+    const host = document.createElement("div");
+    host.id = id;
+    const shadow = host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = `
+      :host { all: initial; position: fixed; right: max(16px, env(safe-area-inset-right));
+        bottom: max(16px, env(safe-area-inset-bottom)); z-index: ${zIndex};
+        font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color-scheme: light; }
+      .dock-stack { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+      .dock-launcher { all: unset; box-sizing: border-box; display: inline-flex; align-items: center;
+        justify-content: center; gap: 6px; min-height: 36px; padding: 0 12px;
+        border: 1px solid #ffffff26; border-radius: 999px; background: #252629; color: #fff;
+        font: 600 12px/1 system-ui, sans-serif; cursor: pointer; user-select: none;
+        box-shadow: 0 3px 12px #0002; }
+      .dock-launcher:hover, .dock-launcher[aria-expanded="true"] { background: #3f4146; }
+      .dock-launcher svg { width: 15px; height: 15px; flex: none; }
+      .dock-menu { box-sizing: border-box; display: flex; flex-direction: column; flex-wrap: nowrap; gap: 4px;
+        width: min(224px, calc(100vw - 32px)); max-height: calc(100dvh - 100px); overflow: auto;
+        padding: 6px; background: #fff; color: #1f2937; border: 1px solid #e5e7eb;
+        border-radius: 14px; box-shadow: 0 8px 28px #0002; }
+      .dock-menu[hidden] { display: none; }
+      .dock-menu > button { all: unset; box-sizing: border-box; display: flex;
+        align-items: center; justify-content: flex-start; gap: 8px; width: 100%; min-height: 38px;
+        padding: 8px 10px; border-radius: 8px; background: transparent; color: #1f2937;
+        font: 500 13px/1.45 system-ui, sans-serif; cursor: pointer; text-align: left; }
+      .dock-menu > button:hover { background: #f3f4f6; }
+      .dock-menu > button:disabled { opacity: .45; cursor: default; }
+      .dock-launcher:focus-visible, .dock-menu > button:focus-visible {
+        outline: 2px solid #059669; outline-offset: 3px; }
+      @media (pointer: coarse) { .dock-launcher { min-height: 44px; } }
+    `;
+    const stack = document.createElement("div");
+    stack.className = "dock-stack";
+    const menu = document.createElement("div");
+    menu.className = "dock-menu";
+    menu.id = id + "-menu";
+    menu.hidden = true;
+    menu.setAttribute("role", "group");
+    menu.setAttribute("aria-label", caption);
+    const launcher = document.createElement("button");
+    launcher.type = "button";
+    launcher.className = "dock-launcher";
+    launcher.title = caption;
+    launcher.setAttribute("aria-label", caption);
+    launcher.setAttribute("aria-controls", menu.id);
+    launcher.setAttribute("aria-expanded", "false");
+    const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    icon.setAttribute("viewBox", "0 0 24 24");
+    icon.setAttribute("fill", "none");
+    icon.setAttribute("stroke", "currentColor");
+    icon.setAttribute("stroke-width", "1.8");
+    icon.setAttribute("stroke-linecap", "round");
+    icon.setAttribute("stroke-linejoin", "round");
+    icon.setAttribute("aria-hidden", "true");
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    line.setAttribute("d", "M12 3v12m-4-4 4 4 4-4M5 16v4h14v-4");
+    icon.append(line);
+    const text = document.createElement("span");
+    text.textContent = caption;
+    launcher.append(icon, text);
+    const dock = { host, shadow, stack, menu, launcher, text, style, onClose: null };
+    dock.setExpanded = (expanded, focus = false) => {
+      menu.hidden = !expanded;
+      launcher.setAttribute("aria-expanded", String(expanded));
+      if (!expanded) dock.onClose?.();
+      if (focus) (expanded ? menu.querySelector("button:not(:disabled)") : launcher)?.focus();
+    };
+    launcher.addEventListener("click", () => dock.setExpanded(menu.hidden, true));
+    document.addEventListener("pointerdown", event => {
+      if (!menu.hidden && !event.composedPath().includes(host)) dock.setExpanded(false);
+    });
+    shadow.addEventListener("keydown", event => {
+      if (event.key === "Escape" && !menu.hidden) {
+        event.preventDefault();
+        event.stopPropagation();
+        dock.setExpanded(false, true);
+      }
+    });
+    stack.append(menu, launcher);
+    shadow.append(style, stack);
+    return dock;
+  }
+
   function createUi() {
     const preferences = {
       downloadImages: readBooleanPreference(PREFERENCE_KEYS.downloadImages, false),
-      collapsed: readBooleanPreference(PREFERENCE_KEYS.collapsed, false),
       includeMetadata: readBooleanPreference(
         PREFERENCE_KEYS.includeMetadata,
         true,
@@ -1038,71 +1121,11 @@
       ),
     };
 
-    const host = document.createElement("div");
-    host.id = ROOT_ID;
-    const shadow = host.attachShadow({ mode: "open" });
+    const dock = createExportDock(ROOT_ID, 2147483647);
+    const { host, shadow, stack } = dock;
     const style = document.createElement("style");
     style.textContent = `
-        :host {
-          all: initial;
-          position: fixed;
-          right: 22px;
-          bottom: 22px;
-          z-index: 2147483647;
-          font-family: "Google Sans", system-ui, -apple-system, sans-serif;
-        }
-        .stack {
-          display: flex;
-          flex-direction: column;
-          align-items: flex-end;
-          gap: 10px;
-        }
-        button {
-          font: inherit;
-          appearance: none;
-          border: 0;
-          cursor: pointer;
-        }
-        .control {
-          display: flex;
-          flex-wrap: wrap;
-          max-width: calc(100vw - 32px);
-          overflow: hidden;
-          border: 1px solid rgba(255, 255, 255, 0.22);
-          border-radius: 999px;
-          background: #1f1f1f;
-          color: #fff;
-          box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
-        }
-        .btn {
-          display: inline-flex;
-          min-height: 42px;
-          align-items: center;
-          justify-content: center;
-          background: transparent;
-          color: inherit;
-          padding: 0 14px;
-          font-weight: 600;
-          white-space: nowrap;
-          gap: 6px;
-          font-size: 13px;
-        }
-        .btn:hover {
-          background: #303030;
-        }
-        .btn:disabled {
-          cursor: progress;
-          opacity: 0.65;
-        }
-        .btn-sep {
-          width: 1px;
-          background: rgba(255, 255, 255, 0.16);
-        }
-        .menu-button {
-          width: 36px;
-          padding: 0;
-          font-size: 18px;
-        }
+        button { font: inherit; appearance: none; border: 0; cursor: pointer; }
         .panel {
           box-sizing: border-box;
           width: min(290px, calc(100vw - 32px));
@@ -1162,11 +1185,34 @@
         .picker-list { overflow: auto; min-height: 60px; max-height: 40vh; border-block: 1px solid #5f6368; }
         .picker-row { display: flex; gap: 12px; padding: 10px 4px; align-items: start; cursor: pointer; }
         .picker-row span { overflow-wrap: anywhere; }
-        .picker-note { color: #bdc1c6; font-size: 12px; }
+        .picker-note { color: #6b7280; font-size: 12px; }
+        .panel { background: #fff; color: #1f2937; border-color: #e5e7eb;
+          box-shadow: 0 8px 28px #0002; max-height: calc(100dvh - 280px); overflow: auto; }
+        .option:hover { background: #f3f4f6; }
+        .option input { accent-color: #047857; }
+        .option-description { color: #6b7280; }
+        .picker-overlay { background: #11182766; }
+        .picker { background: #fff; color: #1f2937; border-color: #e5e7eb; padding: 24px;
+          box-shadow: 0 16px 48px #0003; max-height: 88dvh; overflow: auto;
+          font: 14px/1.5 system-ui, sans-serif; }
+        .picker h2 { font-size: 18px; font-weight: 650; color: #111827; }
+        .picker input { background: #fff; color: #1f2937; border-color: #d1d5db;
+          border-radius: 8px; padding: 8px; font-size: 13px; accent-color: #047857; }
+        .picker button { box-sizing: border-box; min-height: 36px; background: #f9fafb;
+          color: #374151; border: 1px solid #d1d5db; border-radius: 8px; font: 500 13px/1.4 system-ui, sans-serif; }
+        .picker button.primary { background: #047857; color: #fff; border-color: #047857; }
+        .picker button:hover:not(:disabled) { filter: brightness(.96); }
+        .picker :is(button, input):focus-visible, .panel input:focus-visible {
+          outline: 2px solid #059669; outline-offset: 2px; }
+        .picker-list { border: 1px solid #e5e7eb; border-radius: 10px; padding: 8px; flex-shrink: 1; }
+        .picker-row { padding: 8px; margin-bottom: 8px; border: 1px solid #e5e7eb; border-radius: 6px; }
+        .picker-row:last-child { margin-bottom: 0; }
+        .picker-row input { width: 16px; height: 16px; flex-shrink: 0; margin-top: 3px; }
+        .picker-row[data-selected="true"] { background: #d1fae5; border-color: #059669;
+          box-shadow: inset 3px 0 0 #059669; }
+        .picker-row:focus-within { outline: 2px solid #059669; outline-offset: -2px; }
+        @media (max-width: 520px) { .picker { padding: 16px; } }
     `;
-
-    const stack = document.createElement("div");
-    stack.className = "stack";
 
     const toast = document.createElement("div");
     toast.className = "toast";
@@ -1221,7 +1267,7 @@
       })
     );
 
-    const control = document.createElement("div");
+    const control = dock.menu;
     panel.append(createOption({
       label: "尝试下载图片（ZIP）",
       description: "默认关闭；识别到的图片保存到 ZIP，失败写入报告。文件附件尚未适配。",
@@ -1231,7 +1277,7 @@
         writeBooleanPreference(PREFERENCE_KEYS.downloadImages, value);
       },
     }));
-    control.className = "control";
+    control.className = "control dock-menu";
 
     // Build labels without HTML parsing so Trusted Types cannot block startup.
     function appendButtonLabel(button, iconText, labelText) {
@@ -1248,34 +1294,31 @@
     exportCurrentBtn.className = "btn";
     appendButtonLabel(exportCurrentBtn, "📄", "当前会话 (.md)");
 
-    const sep = document.createElement("div");
-    sep.className = "btn-sep";
-
     // 按钮 2：批量全量导出 (.zip)
     const exportBatchBtn = document.createElement("button");
     exportBatchBtn.className = "btn";
-    exportBatchBtn.style.color = "#a8c7fa";
     appendButtonLabel(exportBatchBtn, "📦", "批量导出 (ZIP)");
 
     const selectBtn = document.createElement("button");
     selectBtn.className = "btn";
     selectBtn.textContent = "☑ 选择会话";
 
-    const sep2 = document.createElement("div");
-    sep2.className = "btn-sep";
-
     // 按钮 3：菜单设置
     const menuBtn = document.createElement("button");
     menuBtn.className = "btn menu-button";
-    menuBtn.textContent = "⋮";
+    menuBtn.textContent = "导出设置";
+    menuBtn.setAttribute("aria-expanded", "false");
 
-    control.append(exportCurrentBtn, sep, exportBatchBtn, selectBtn, sep2, menuBtn);
-    stack.append(toast, panel, control);
-    shadow.append(style, stack);
+    control.append(exportCurrentBtn, exportBatchBtn, selectBtn, menuBtn);
+    stack.prepend(toast, panel);
+    dock.onClose = () => { panel.hidden = true; menuBtn.setAttribute("aria-expanded", "false"); };
+    shadow.append(style, dock.style);
 
     let busy = false;
     function setBusy(value) {
       busy = value;
+      dock.text.textContent = value ? "导出中" : "导出";
+      dock.launcher.setAttribute("aria-label", value ? "正在导出，点击查看菜单" : "导出");
       for (const button of [exportCurrentBtn, exportBatchBtn, selectBtn]) button.disabled = value;
     }
 
@@ -1329,7 +1372,7 @@
         let filtered = scan.conversations;
         let visible = 100;
         let filterError = "";
-        const finish = (value) => { overlay.remove(); selectBtn.focus(); resolve(value); };
+        const finish = (value) => { overlay.remove(); dock.launcher.focus(); resolve(value); };
         const exportSelection = button("导出选中 (0)", () => {
           if (!selected.size || filterError) return;
           finish(scan.conversations.filter((item) => selected.has(item.id)));
@@ -1349,8 +1392,10 @@
             const check = document.createElement("input");
             check.type = "checkbox";
             check.checked = selected.has(item.id);
+            row.dataset.selected = String(check.checked);
             check.addEventListener("change", () => {
               if (check.checked) selected.add(item.id); else selected.delete(item.id);
+              row.dataset.selected = String(check.checked);
               updateStatus();
             });
             const text = document.createElement("span");
@@ -1579,11 +1624,12 @@
       }
     }
 
-    exportCurrentBtn.addEventListener("click", handleExportCurrent);
-    exportBatchBtn.addEventListener("click", () => handleExportBatch(false));
-    selectBtn.addEventListener("click", () => handleExportBatch(true));
+    exportCurrentBtn.addEventListener("click", () => { dock.setExpanded(false); handleExportCurrent(); });
+    exportBatchBtn.addEventListener("click", () => { dock.setExpanded(false); handleExportBatch(false); });
+    selectBtn.addEventListener("click", () => { dock.setExpanded(false); handleExportBatch(true); });
     menuBtn.addEventListener("click", () => {
       panel.hidden = !panel.hidden;
+      menuBtn.setAttribute("aria-expanded", String(!panel.hidden));
     });
 
     return { host, exportCurrentBtn };

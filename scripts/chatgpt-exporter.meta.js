@@ -3,7 +3,7 @@
 // @name:zh-CN   ChatGPT 通用导出器（Markdown 支持）
 // @name:zh-TW   ChatGPT 通用匯出器（Markdown 支援）
 // @namespace    https://github.com/FirstPotato/ai-chat-exporters
-// @version      1.3.6.2
+// @version      1.3.6.3
 // @description  Export ChatGPT conversations from personal, project, and team workspaces to local ZIP archives with JSON, Markdown, and assets.
 // @description:zh-CN  将 ChatGPT 个人、项目和团队空间对话导出为本地 ZIP，包含 JSON、Markdown 和资源文件。
 // @description:zh-TW  將 ChatGPT 個人、專案和團隊工作區對話匯出為本機 ZIP，包含 JSON、Markdown 和資源檔案。
