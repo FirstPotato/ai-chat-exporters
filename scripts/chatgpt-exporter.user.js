@@ -3,7 +3,7 @@
 // @name:zh-CN   ChatGPT 通用导出器（Markdown 支持）
 // @name:zh-TW   ChatGPT 通用匯出器（Markdown 支援）
 // @namespace    https://github.com/FirstPotato/ai-chat-exporters
-// @version      1.3.6.3
+// @version      1.3.6.4
 // @description  Export ChatGPT conversations from personal, project, and team workspaces to local ZIP archives with JSON, Markdown, and assets.
 // @description:zh-CN  将 ChatGPT 个人、项目和团队空间对话导出为本地 ZIP，包含 JSON、Markdown 和资源文件。
 // @description:zh-TW  將 ChatGPT 個人、專案和團隊工作區對話匯出為本機 ZIP，包含 JSON、Markdown 和資源檔案。
@@ -338,14 +338,15 @@
     }
 
     async function ensureAccessToken() {
+        throwIfCancelled();
         if (accessToken) return accessToken;
         try {
-            const session = await (await fetch('/api/auth/session?unstable_client=true')).json();
+            const session = await (await exportFetch('/api/auth/session?unstable_client=true')).json();
             if (session.accessToken) {
                 accessToken = session.accessToken;
                 return accessToken;
             }
-        } catch (_) {}
+        } catch (_) { throwIfCancelled(); }
         alert(t('alert.accessTokenUnavailable'));
         return null;
     }
@@ -355,7 +356,134 @@
     const MAX_SAFE_ID_LENGTH = 64;
     const MAX_IMAGE_ID_LENGTH = 80;
     const LOCAL_FILE_REF_PREFIX = 'chatgpt-file:';
-    const sleep = ms => new Promise(r => setTimeout(r, ms));
+  let activeTask = null;
+
+  function cancellationError() {
+    const error = new Error("已停止导出，未下载的内容已丢弃。");
+    error.name = "ExportCancelledError";
+    return error;
+  }
+
+  function throwIfCancelled(task = activeTask) {
+    if (task?.signal.aborted) throw cancellationError();
+  }
+
+  function onCancellation(task, callback) {
+    if (!task) return () => {};
+    if (task.signal.aborted) { callback(); return () => {}; }
+    task.signal.addEventListener("abort", callback, { once: true });
+    return () => task.signal.removeEventListener("abort", callback);
+  }
+
+  function sleep(ms) {
+    const task = activeTask;
+    throwIfCancelled(task);
+    return new Promise((resolve, reject) => {
+      let unsubscribe = () => {};
+      const timer = setTimeout(() => { unsubscribe(); resolve(); }, ms);
+      unsubscribe = onCancellation(task, () => { clearTimeout(timer); reject(cancellationError()); });
+    });
+  }
+
+  // Use JSZip's public stream API so stopping also pauses ZIP generation.
+  function generateZip(zip, task, onProgress) {
+    throwIfCancelled(task);
+    return new Promise((resolve, reject) => {
+      const stream = zip.generateInternalStream({ type: "uint8array", compression: "DEFLATE" });
+      let chunks = [];
+      let settled = false;
+      let unsubscribe = () => {};
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        stream.pause();
+        chunks = [];
+        unsubscribe();
+        reject(error);
+      };
+      unsubscribe = onCancellation(task, () => fail(cancellationError()));
+      stream.on("data", (chunk, metadata) => {
+        if (settled) return;
+        if (task.signal.aborted) { fail(cancellationError()); return; }
+        chunks.push(chunk);
+        onProgress?.(metadata.percent);
+      });
+      stream.on("error", fail);
+      stream.on("end", () => {
+        if (settled) return;
+        if (task.signal.aborted) { fail(cancellationError()); return; }
+        try {
+          const blob = new Blob(chunks, { type: "application/zip" });
+          chunks = [];
+          settled = true;
+          unsubscribe();
+          resolve(blob);
+        } catch (error) { fail(error); }
+      });
+      if (!settled) stream.resume();
+    });
+  }
+
+
+    let exportUi = null;
+    let exportNoticeTimer = null;
+
+    function showExportNotice(message) {
+        addBtn();
+        clearTimeout(exportNoticeTimer);
+        exportUi.status.textContent = message;
+        exportUi.status.hidden = false;
+        exportNoticeTimer = setTimeout(() => {
+            if (!activeTask) exportUi.status.hidden = true;
+        }, 10000);
+    }
+
+    function beginExportTask() {
+        if (activeTask) {
+            showExportNotice('已有任务正在运行，请先停止或等待完成。');
+            return null;
+        }
+        addBtn();
+        clearTimeout(exportNoticeTimer);
+        activeTask = new AbortController();
+        exportUi.dock.setExpanded(false);
+        exportUi.stop.hidden = false;
+        exportUi.stop.disabled = false;
+        exportUi.stop.textContent = '停止';
+        exportUi.status.hidden = false;
+        exportUi.status.textContent = '正在准备导出…';
+        exportUi.dock.text.textContent = '导出中';
+        for (const button of exportUi.dock.menu.querySelectorAll('button')) button.disabled = true;
+        return activeTask;
+    }
+
+    function finishExportTask(task) {
+        if (activeTask !== task) return;
+        activeTask = null;
+        exportUi.stop.hidden = true;
+        exportUi.stop.disabled = false;
+        exportUi.dock.text.textContent = exportUi.caption;
+        for (const button of exportUi.dock.menu.querySelectorAll('button')) button.disabled = false;
+        clearTimeout(exportNoticeTimer);
+        exportNoticeTimer = setTimeout(() => {
+            if (!activeTask) exportUi.status.hidden = true;
+        }, 10000);
+    }
+
+    // Only exporter requests receive this signal; website requests are unaffected.
+    async function exportFetch(resource, options = {}) {
+        const task = activeTask;
+        throwIfCancelled(task);
+        try {
+            const response = await window.fetch(resource, task ? { ...options, signal: task.signal } : options);
+            throwIfCancelled(task);
+            return response;
+        } catch (error) {
+            throwIfCancelled(task);
+            throw error;
+        }
+    }
+
     const jitter = () => BASE_DELAY + Math.random() * JITTER;
     const sanitizeFilename = (name, fallback = 'untitled', maxLength = MAX_SAFE_NAME_LENGTH) => {
         const fallbackName = String(fallback || 'untitled')
@@ -1089,6 +1217,7 @@
     }
 
     function downloadFile(blob, filename) {
+        throwIfCancelled();
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
         a.download = filename;
@@ -1100,15 +1229,8 @@
 
     // --- 导出流程核心逻辑 ---
     function getExportButton() {
-        let btn = document.getElementById('gpt-rescue-btn');
-        if (!btn) {
-            btn = document.createElement('button');
-            btn.id = 'gpt-rescue-btn';
-            btn.style.display = 'none';
-            btn.textContent = t('button.export');
-            document.body.appendChild(btn);
-        }
-        return btn;
+        addBtn();
+        return exportUi.status;
     }
 
     function makeZipScopeRegistry() {
@@ -1116,17 +1238,23 @@
     }
 
     async function exportConversations(options = {}) {
-        const { mode = 'personal', workspaceId = null, conversationEntries = null, exportType = null } = options;
+        let { mode = 'personal', workspaceId = null, conversationEntries = null, exportType = null } = options;
+        const task = beginExportTask();
+        if (!task) return;
         const btn = getExportButton();
-        btn.disabled = true;
-
-        if (!await ensureAccessToken()) {
-            btn.disabled = false;
-            btn.textContent = t('button.export');
-            return;
-        }
 
         try {
+            if (!await ensureAccessToken()) { btn.textContent = t('alert.accessTokenUnavailable'); return; }
+            throwIfCancelled(task);
+            if (mode === 'project' && !Array.isArray(conversationEntries)) {
+                btn.textContent = '正在扫描项目会话…';
+                conversationEntries = await listProjectSpaceConversations(workspaceId);
+                exportType = 'full';
+            }
+            if (Array.isArray(conversationEntries) && conversationEntries.length === 0) {
+                btn.textContent = mode === 'project' ? t('alert.noProjectConversations') : '没有选中的会话。';
+                return;
+            }
             const zip = new JSZip();
             const zipFilenameRegistry = makeZipScopeRegistry();
             const failedConversations = [];
@@ -1142,6 +1270,7 @@
                             : zip;
                         await exportConversationIntoZip(convData, target, accessToken, zipFilenameRegistry);
                     } catch (convErr) {
+                        throwIfCancelled(task);
                         console.error(`⚠️ 跳过对话 [${entry.title || entry.id}]: ${convErr.message}`);
                         failedConversations.push({ id: entry.id, title: entry.title || t('fallback.unknown'), error: convErr.message });
                     }
@@ -1156,6 +1285,7 @@
                         const convData = await getConversation(orphanIds[i], workspaceId);
                         await exportConversationIntoZip(convData, zip, accessToken, zipFilenameRegistry);
                     } catch (convErr) {
+                        throwIfCancelled(task);
                         console.error(`⚠️ 跳过对话 [${orphanIds[i]}]: ${convErr.message}`);
                         failedConversations.push({ id: orphanIds[i], title: orphanIds[i], error: convErr.message });
                     }
@@ -1176,6 +1306,7 @@
                             const convData = await getConversation(projectConvIds[i], workspaceId);
                             await exportConversationIntoZip(convData, projectFolder, accessToken, zipFilenameRegistry);
                         } catch (convErr) {
+                        throwIfCancelled(task);
                             console.error(`⚠️ 跳过对话 [${projectConvIds[i]}]: ${convErr.message}`);
                             failedConversations.push({ id: projectConvIds[i], title: projectConvIds[i], error: convErr.message });
                         }
@@ -1185,7 +1316,10 @@
             }
 
             btn.textContent = `📦 ${t('status.generatingZip')}`;
-            const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
+            const blob = await generateZip(zip, task, percent => {
+                btn.textContent = `正在生成 ZIP：${Math.round(percent)}%`;
+            });
+            throwIfCancelled(task);
             const date = new Date().toISOString().slice(0, 10);
             const selectionType = exportType || ((Array.isArray(conversationEntries) && conversationEntries.length > 0) ? 'selected' : 'full');
             let filename = '';
@@ -1213,14 +1347,15 @@
             btn.textContent = `✅ ${t('button.done')}`;
 
         } catch (e) {
-            console.error("导出过程中发生严重错误:", e);
-            alert(t('alert.exportFailed', { message: e.message }));
-            btn.textContent = `⚠️ ${t('button.error')}`;
+            if (task.signal.aborted || e.name === 'ExportCancelledError') {
+                btn.textContent = cancellationError().message;
+            } else {
+                console.error("导出过程中发生严重错误:", e);
+                alert(t('alert.exportFailed', { message: e.message }));
+                btn.textContent = `⚠️ ${t('button.error')}`;
+            }
         } finally {
-            setTimeout(() => {
-                btn.disabled = false;
-                btn.textContent = t('button.export');
-            }, 3000);
+            finishExportTask(task);
         }
     }
 
@@ -1229,17 +1364,7 @@
     }
 
     async function startProjectSpaceExportProcess(workspaceId = null) {
-        try {
-            const projectEntries = await listProjectSpaceConversations(workspaceId);
-            if (projectEntries.length === 0) {
-                alert(t('alert.noProjectConversations'));
-                return;
-            }
-            await exportConversations({ mode: 'project', workspaceId, conversationEntries: projectEntries, exportType: 'full' });
-        } catch (err) {
-            console.error('导出项目空间失败:', err);
-            alert(t('alert.projectExportFailed', { message: err.message }));
-        }
+        await exportConversations({ mode: 'project', workspaceId, exportType: 'full' });
     }
 
     async function startSelectiveExportProcess(mode, workspaceId, conversationEntries) {
@@ -1321,7 +1446,7 @@
                 query.set('cursor', cursor);
             }
 
-            const r = await fetch(`/backend-api/gizmos/snorlax/sidebar?${query.toString()}`, { headers });
+            const r = await exportFetch(`/backend-api/gizmos/snorlax/sidebar?${query.toString()}`, { headers });
             if (!r.ok) {
                 throw new Error(t('error.projectSpaceListFailed', { status: r.status }));
             }
@@ -1347,6 +1472,7 @@
             const projects = await getProjectSpaces(workspaceId);
             return projects.map(({ id, title }) => ({ id, title }));
         } catch (err) {
+            throwIfCancelled();
             console.warn(`获取项目(Gizmo)列表失败 (${err?.message || err})`);
             return [];
         }
@@ -1367,7 +1493,7 @@
         if (gizmoId) {
             let cursor = '0';
             do {
-                const r = await fetch(`/backend-api/gizmos/${gizmoId}/conversations?cursor=${cursor}`, { headers });
+                const r = await exportFetch(`/backend-api/gizmos/${gizmoId}/conversations?cursor=${cursor}`, { headers });
                 if (!r.ok) throw new Error(t('error.projectConversationListFailed', { status: r.status }));
                 const j = await r.json();
                 j.items?.forEach(it => all.add(it.id));
@@ -1382,7 +1508,7 @@
                         state: is_archived ? t('status.archived') : t('status.active'),
                         page: ++page
                     })}`;
-                    const r = await fetch(`/backend-api/conversations?offset=${offset}&limit=${PAGE_LIMIT}&order=updated${is_archived ? '&is_archived=true' : ''}`, { headers });
+                    const r = await exportFetch(`/backend-api/conversations?offset=${offset}&limit=${PAGE_LIMIT}&order=updated${is_archived ? '&is_archived=true' : ''}`, { headers });
                     if (!r.ok) throw new Error(t('error.rootConversationListFailed', { status: r.status }));
                     const j = await r.json();
                     if (j.items && j.items.length > 0) {
@@ -1456,7 +1582,7 @@
             let offset = 0;
             let has_more = true;
             do {
-                const r = await fetch(`/backend-api/conversations?offset=${offset}&limit=${PAGE_LIMIT}&order=updated${is_archived ? '&is_archived=true' : ''}`, { headers });
+                const r = await exportFetch(`/backend-api/conversations?offset=${offset}&limit=${PAGE_LIMIT}&order=updated${is_archived ? '&is_archived=true' : ''}`, { headers });
                 if (!r.ok) throw new Error(t('error.conversationListFailed', { status: r.status }));
                 const j = await r.json();
                 if (j.items && j.items.length > 0) {
@@ -1475,7 +1601,7 @@
             for (const project of projects) {
                 let cursor = '0';
                 do {
-                    const r = await fetch(`/backend-api/gizmos/${project.id}/conversations?cursor=${cursor}`, { headers });
+                    const r = await exportFetch(`/backend-api/gizmos/${project.id}/conversations?cursor=${cursor}`, { headers });
                     if (!r.ok) throw new Error(t('error.projectConversationListFailed', { status: r.status }));
                     const j = await r.json();
                     j.items?.forEach(it => addEntry(it, { projectId: project.id, projectTitle: project.title }));
@@ -1513,7 +1639,7 @@
             let cursor = '0';
             let fetched = false;
             do {
-                const r = await fetch(`/backend-api/gizmos/${project.id}/conversations?cursor=${cursor}`, { headers });
+                const r = await exportFetch(`/backend-api/gizmos/${project.id}/conversations?cursor=${cursor}`, { headers });
                 if (!r.ok) {
                     if (!fetched && Array.isArray(project.conversations) && project.conversations.length > 0) {
                         console.warn(`项目空间对话列表请求失败 (${r.status})，使用侧边栏返回的预览对话。`);
@@ -1556,7 +1682,7 @@
         let lastError = null;
         for (let attempt = 1; attempt <= retries; attempt++) {
             try {
-                const r = await fetch(`/backend-api/conversation/${id}`, { headers });
+                const r = await exportFetch(`/backend-api/conversation/${id}`, { headers });
                 if (r.ok) {
                     const j = await r.json();
                     j.__fetched_at = new Date().toISOString();
@@ -1572,6 +1698,7 @@
                 }
                 throw lastError;
             } catch (err) {
+            throwIfCancelled();
                 lastError = err;
                 if (attempt < retries && !(err.message && err.message.includes('(4'))) {
                     const backoff = Math.pow(2, attempt) * 1000 + Math.random() * 500;
@@ -1657,7 +1784,7 @@
         const resolvedWs = resolveWorkspaceId(null);
         if (resolvedWs) headers['ChatGPT-Account-Id'] = resolvedWs;
 
-        const r = await fetch(`/backend-api/files/${fileId}/download`, { headers });
+        const r = await exportFetch(`/backend-api/files/${fileId}/download`, { headers });
         if (!r.ok) throw new Error(t('error.fileDownloadUrlFailed', { status: r.status }));
         const data = await r.json();
         return data.download_url || null;
@@ -1678,6 +1805,7 @@
                     url = await resolveImageDownloadUrl(fileId, accessToken);
                     console.log(`🖼️ 已解析图片下载链接 [${fileId}]`);
                 } catch (err) {
+            throwIfCancelled();
                     console.warn(`⚠️ 无法解析图片下载链接 [${fileId}]:`, err.message);
                     return null;
                 }
@@ -1691,7 +1819,7 @@
         if (accessToken && url.startsWith('/')) {
             opts.headers = { 'Authorization': `Bearer ${accessToken}` };
         }
-        const r = await fetch(url, opts);
+        const r = await exportFetch(url, opts);
         if (!r.ok) throw new Error(t('error.imageDownloadFailed', { status: r.status }));
         return await r.blob();
     }
@@ -1711,7 +1839,7 @@
         if (accessToken && url.startsWith('/')) {
             opts.headers = { 'Authorization': `Bearer ${accessToken}` };
         }
-        const r = await fetch(url, opts);
+        const r = await exportFetch(url, opts);
         if (!r.ok) throw new Error(t('error.fileDownloadFailed', { status: r.status }));
         return await r.blob();
     }
@@ -1771,6 +1899,7 @@
                     });
                     okCount++;
                 } catch (err) {
+            throwIfCancelled();
                     console.warn(`⚠️ 图片下载跳过 [${assetId}]:`, err.message, image);
                 }
                 await sleep(jitter());
@@ -1801,6 +1930,7 @@
                     fileReferenceKeys({ ...file, key }).forEach(alias => attachmentFiles.set(alias, entry));
                     okFileCount++;
                 } catch (err) {
+            throwIfCancelled();
                     console.warn(`⚠️ 文件下载跳过 [${assetId}]:`, err.message, file);
                 }
                 await sleep(jitter());
@@ -1872,6 +2002,10 @@
     }
 
     function showConversationPicker(options = {}) {
+        if (activeTask) { showExportNotice('已有任务正在运行，请先停止或等待完成。'); return; }
+        const scanTask = beginExportTask();
+        if (!scanTask) return;
+        exportUi.status.textContent = '正在扫描会话列表…';
         const { mode = 'personal', workspaceId = null } = options;
         const existing = document.getElementById('export-dialog-overlay');
         if (existing) existing.remove();
@@ -1892,7 +2026,11 @@
             fontFamily: 'sans-serif', color: '#333', boxSizing: 'border-box'
         });
 
-        const closeDialog = () => document.body.removeChild(overlay);
+        const closeDialog = () => {
+            if (activeTask === scanTask) scanTask.abort();
+            overlay.remove();
+        };
+        overlay.addEventListener('exporter-close', closeDialog);
         const state = {
             list: [],
             filtered: [],
@@ -2080,6 +2218,8 @@
 
             if (selectAllBtn) selectAllBtn.disabled = controlsDisabled;
             if (clearAllBtn) clearAllBtn.disabled = controlsDisabled;
+            const backBtn = dialog.querySelector('#back-btn');
+            if (backBtn) backBtn.textContent = state.loading ? '停止加载' : t('button.back');
             if (exportBtn) exportBtn.disabled = controlsDisabled || state.selected.size === 0;
 
             listEl.innerHTML = '';
@@ -2210,18 +2350,30 @@
             : listConversations(workspaceId);
         listPromise
             .then(list => {
+                throwIfCancelled(scanTask);
+                if (!overlay.isConnected) return;
                 state.list = list;
                 state.loading = false;
                 applyFilters();
                 renderList();
             })
             .catch(err => {
-                const statusEl = dialog.querySelector('#conv-status');
+                if (scanTask.signal.aborted || err.name === 'ExportCancelledError') {
+                    overlay.remove();
+                    exportUi.status.textContent = cancellationError().message;
+                    return;
+                }
+                if (!overlay.isConnected) return;
                 state.loading = false;
                 state.list = [];
                 state.filtered = [];
-                statusEl.textContent = t('status.loadFailed', { message: err.message });
                 renderList();
+                dialog.querySelector('#conv-status').textContent = t('status.loadFailed', { message: err.message });
+                exportUi.status.textContent = t('status.loadFailed', { message: err.message });
+            })
+            .finally(() => {
+                finishExportTask(scanTask);
+                if (!scanTask.signal.aborted && state.list.length) exportUi.status.hidden = true;
             });
     }
 
@@ -2229,6 +2381,7 @@
      * [重构] 多步骤、用户主导的导出对话框
      */
     function showExportDialog() {
+        if (activeTask && !activeTask.signal.aborted) { showExportNotice('已有任务正在运行，请先停止或等待完成。'); return; }
         if (document.getElementById('export-dialog-overlay')) return;
 
         const overlay = document.createElement('div');
@@ -2544,6 +2697,7 @@
         overlay.addEventListener('keydown', event => {
             if (event.key === 'Escape') {
                 event.preventDefault();
+                overlay.dispatchEvent(new Event('exporter-close'));
                 overlay.remove();
                 document.getElementById('gpt-rescue-btn')?.shadowRoot?.querySelector('.dock-launcher')?.focus();
             }
@@ -2559,9 +2713,49 @@
     }
 
     function addBtn() {
-        if (document.getElementById('gpt-rescue-btn')) return;
+        if (exportUi?.dock.host.isConnected) return;
         const chinese = /[\u3400-\u9fff]/.test(t('button.export'));
-        const dock = createExportDock('gpt-rescue-btn', 99997, chinese ? '导出' : 'Export');
+        const caption = chinese ? '导出' : 'Export';
+        const dock = createExportDock('gpt-rescue-btn', 99997, caption);
+        const style = document.createElement('style');
+        style.textContent = `
+            .export-taskbar { display: flex; align-items: center; gap: 6px; }
+            .stop-export { min-height: 36px; padding: 0 12px; border-radius: 999px;
+                background: #fff1f2; color: #be123c; border: 1px solid #fecdd3;
+                font: 600 12px/1 system-ui, sans-serif; box-shadow: 0 3px 12px #0002; cursor: pointer; }
+            .stop-export[hidden], .export-status[hidden] { display: none; }
+            .stop-export:hover { background: #ffe4e6; }
+            .stop-export:focus-visible { outline: 2px solid #be123c; outline-offset: 2px; }
+            .stop-export:disabled { opacity: .6; cursor: default; }
+            .export-status { box-sizing: border-box; max-width: min(320px, calc(100vw - 32px));
+                padding: 10px 12px; border-radius: 12px; background: #252629; color: #fff;
+                font: 13px/1.5 system-ui, sans-serif; overflow-wrap: anywhere; box-shadow: 0 4px 18px #0002; }
+            @media (pointer: coarse) { .stop-export { min-height: 44px; } }
+        `;
+        const stop = document.createElement('button');
+        stop.type = 'button';
+        stop.className = 'stop-export';
+        stop.textContent = '停止';
+        stop.title = '停止本次导出，丢弃尚未下载的内容';
+        stop.hidden = true;
+        stop.addEventListener('click', () => {
+            if (!activeTask || activeTask.signal.aborted) return;
+            stop.disabled = true;
+            stop.textContent = '停止中';
+            activeTask.abort();
+        });
+        const status = document.createElement('div');
+        status.className = 'export-status';
+        status.hidden = true;
+        status.setAttribute('role', 'status');
+        status.setAttribute('aria-live', 'polite');
+        const taskbar = document.createElement('div');
+        taskbar.className = 'export-taskbar';
+        taskbar.append(dock.launcher, stop);
+        dock.stack.prepend(status);
+        dock.stack.append(taskbar);
+        dock.shadow.append(style);
+        exportUi = { dock, caption, stop, status };
         const action = (label, callback) => {
             const button = document.createElement('button');
             button.type = 'button';
