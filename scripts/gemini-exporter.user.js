@@ -2,7 +2,7 @@
 // @name         Gemini Universal Batch Exporter
 // @name:zh-CN   Gemini 通用导出器
 // @namespace    https://github.com/FirstPotato/ai-chat-exporters
-// @version      2.1.5
+// @version      2.1.6
 // @description  Export Gemini chats as Markdown and raw JSON with chat selection, optional images, and an export report.
 // @description:zh-CN  导出 Gemini 会话为 Markdown 和原始 JSON，支持选择会话、筛选、可选图片下载及导出报告。
 // @author       dikelps, Antigravity
@@ -1226,6 +1226,15 @@
     const style = document.createElement("style");
     style.textContent = `
         button { font: inherit; appearance: none; border: 0; cursor: pointer; }
+        .export-progress { box-sizing: border-box; width: min(320px, calc(100vw - 32px));
+          background: #252629; color: #fff; border: 1px solid #ffffff26; border-radius: 12px;
+          padding: 10px 12px; box-shadow: 0 4px 18px #0002; font: 13px/1.5 system-ui, sans-serif; }
+        .export-progress[hidden] { display: none; }
+        .progress-summary { font-weight: 600; }
+        .progress-title { margin-top: 4px; overflow-wrap: anywhere; display: -webkit-box;
+          -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+        .progress-detail { margin-top: 4px; color: #d1d5db; font-size: 12px; }
+        .progress-title:empty, .progress-detail:empty { display: none; }
         .export-taskbar { display: flex; align-items: center; gap: 6px; }
         .stop-export { min-height: 36px; padding: 0 12px; border-radius: 999px;
           background: #fff1f2; color: #be123c; border: 1px solid #fecdd3;
@@ -1278,6 +1287,7 @@
           box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
         }
         .toast[data-kind="error"] { background: #8c1d18; }
+        .toast[data-kind="warning"] { background: #78350f; }
         .picker-overlay { position: fixed; inset: 0; background: #0009; display: flex;
           align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; }
         .picker { width: min(720px, 100%); max-height: 85vh; display: flex; flex-direction: column;
@@ -1436,14 +1446,37 @@
       stopButton.textContent = "停止中";
       activeTask.abort();
     });
-    stack.prepend(toast, panel);
+    const progress = document.createElement("div");
+    progress.className = "export-progress";
+    progress.hidden = true;
+    progress.setAttribute("role", "status");
+    progress.setAttribute("aria-live", "polite");
+    progress.setAttribute("aria-atomic", "true");
+    const progressSummary = document.createElement("div");
+    progressSummary.className = "progress-summary";
+    const progressTitle = document.createElement("div");
+    progressTitle.className = "progress-title";
+    const progressDetail = document.createElement("div");
+    progressDetail.className = "progress-detail";
+    progress.append(progressSummary, progressTitle, progressDetail);
+    stack.prepend(toast, panel, progress);
+
+    function setProgress(summary, title = "", detail = "") {
+      progressSummary.textContent = summary;
+      progressTitle.textContent = title;
+      progressTitle.title = title;
+      progressDetail.textContent = detail;
+      progress.hidden = !busy || taskPhase === "selecting";
+    }
     dock.onClose = () => { panel.hidden = true; menuBtn.setAttribute("aria-expanded", "false"); };
     shadow.append(style, dock.style);
 
+    let pendingResult = null;
     let busy = false;
     let taskPhase = "idle";
     function setTaskPhase(phase) {
       taskPhase = phase;
+      progress.hidden = !busy || phase === "selecting" || phase === "idle";
       const captions = { idle: "导出", listing: "加载列表", selecting: "导出", exporting: "导出中", packing: "打包中" };
       const caption = captions[phase] || captions.idle;
       dock.text.textContent = caption;
@@ -1458,8 +1491,22 @@
       activeTask = value ? new pageWindow.AbortController() : null;
       stopButton.disabled = false;
       stopButton.textContent = "停止";
+      progressSummary.textContent = "";
+      progressTitle.textContent = "";
+      progressTitle.title = "";
+      progressDetail.textContent = "";
+      if (value) {
+        clearTimeout(toastTimer);
+        toast.style.display = "none";
+        pendingResult = null;
+      }
       setTaskPhase(value ? phase : "idle");
       for (const button of [exportCurrentBtn, exportBatchBtn, selectBtn]) button.disabled = value;
+      if (!value && pendingResult) {
+        const result = pendingResult;
+        pendingResult = null;
+        showExportResult(result);
+      }
     }
 
     function chooseConversations(scan) {
@@ -1605,6 +1652,25 @@
       }, duration);
     }
 
+    function showExportResult(result) {
+      // Match ChatGPT's completion flow: a native summary alert, then a brief status.
+      const icon = result.kind === "success" ? "✅" : "⚠️";
+      const lines = [icon + " " + result.title, "", result.summary];
+      if (result.counts?.length) {
+        lines.push("", ...result.counts.map(([label, value]) => label + "：" + value));
+      }
+      if (result.filename) {
+        lines.push("", "文件：" + result.filename, "文件已生成并交给浏览器下载；保存状态请查看浏览器下载列表。");
+      }
+      if (result.details?.length) {
+        lines.push("", "详情：", ...result.details.slice(0, 20).map(message => "• " + message));
+        if (result.details.length > 20) lines.push("其余记录请查看 ZIP 内的 export-report.json。");
+      }
+      window.alert(lines.join("\n"));
+      showToast(icon + " " + result.title + "：" + result.summary,
+        result.kind === "error" ? "error" : result.kind === "partial" ? "warning" : "success", 10000);
+    }
+
     // --- 导出当前会话 ---
     async function handleExportCurrent() {
       if (busy) return;
@@ -1617,6 +1683,7 @@
       setBusy(true);
       const label = exportCurrentBtn.querySelector(".label");
       label.textContent = "正在导出...";
+      setProgress("正在导出第 1 / 1 篇", Core.cleanDocumentTitle(document.title));
 
       try {
         const context = captureExportContext();
@@ -1642,10 +1709,14 @@
 
         const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
         downloadFile(blob, filename);
-        showToast(`✅ 导出成功！共 ${turns.length} 轮对话。`);
+        pendingResult = {
+          kind: "success", title: "导出完成", summary: "当前会话已生成为 Markdown。", filename,
+          counts: [["会话", "1 篇"], ["对话", turns.length + " 轮"]],
+        };
       } catch (err) {
         if (err.name !== "ExportCancelledError") console.error(err);
-        showToast(err.name === "ExportCancelledError" ? err.message : `导出失败: ${err.message}`, err.name === "ExportCancelledError" ? "info" : "error");
+        if (err.name === "ExportCancelledError") showToast(err.message, "info");
+        else pendingResult = { kind: "error", title: "导出失败", summary: "本次未生成下载文件。", details: [err.message] };
       } finally {
         setBusy(false);
         label.textContent = "当前会话 (.md)";
@@ -1668,8 +1739,10 @@
         const context = captureExportContext();
         const exportPreferences = { ...preferences };
         label.textContent = "🔍 扫描会话列表中...";
+        setProgress("正在加载会话列表", "", "扫描结束后确定会话数量");
         const scan = await collectAllConversationIds((msg) => {
           label.textContent = msg;
+          setProgress("正在加载会话列表", "", msg);
         }, context);
         let { conversations } = scan;
 
@@ -1697,6 +1770,8 @@
           throwIfCancelled(task);
           const item = conversations[i];
           label.textContent = `📥 (${i + 1}/${total}) ${item.title.slice(0, 8)}...`;
+          setProgress(`正在导出第 ${i + 1} / ${total} 篇`, item.title,
+            `已处理 ${i} 篇 · Markdown 成功 ${successCount} 篇`);
 
           let jsonFilename = null;
           try {
@@ -1746,6 +1821,9 @@
             results.push({ ...item, status: jsonFilename ? "json-only" : "failed", jsonFilename, error: itemErr.message });
           }
 
+          setProgress(`已处理 ${i + 1} / ${total} 篇`, item.title,
+            `Markdown 成功 ${successCount} 篇 · JSON 已保存 ${jsonCount} 篇`);
+
           // 防频控抖动延时 (类似 ChatGPT 导出的 Jitter)
           await sleep(500 + Math.random() * 300);
         }
@@ -1764,21 +1842,38 @@
         }, null, 2));
         setTaskPhase("packing");
         label.textContent = "📦 正在压缩生成 ZIP...";
+        setProgress("正在生成 ZIP：0%", "", `共 ${total} 篇 · Markdown ${successCount} 篇 · JSON ${jsonCount} 篇`);
         const blob = await generateZip(zip, task, (percent) => {
           label.textContent = `正在生成 ZIP：${Math.round(percent)}%`;
+          setProgress(label.textContent, "", `共 ${total} 篇 · Markdown ${successCount} 篇 · JSON ${jsonCount} 篇`);
         });
         throwIfCancelled(task);
         const dateStr = new Date().toISOString().slice(0, 10);
-        downloadFile(blob, `gemini_${complete ? "export" : "partial_export"}_${selectMode ? "selected_" : ""}${dateStr}.zip`);
-        showToast(complete
-          ? `✅ 已导出${selectMode ? "选中的" : "扫描到的"} ${successCount} 篇会话（JSON＋Markdown）。`
-          : `⚠️ 导出不完整：Markdown ${successCount}/${total}，JSON ${jsonCount}，图片失败 ${failedImages}；详见 export-report.json。`,
-          complete ? "success" : "error", 15000);
+        const filename = `gemini_${complete ? "export" : "partial_export"}_${selectMode ? "selected_" : ""}${dateStr}.zip`;
+        downloadFile(blob, filename);
+        const details = [...scan.warnings];
+        for (const result of results) {
+          if (result.status !== "exported") details.push(result.title + "：" + (result.error || "未完成 Markdown 导出"));
+          const imageFailures = (result.images || []).filter(image => image.status === "failed");
+          if (imageFailures.length) details.push(result.title + "：" + imageFailures.length + " 张图片未下载成功");
+        }
+        pendingResult = {
+          kind: complete ? "success" : "partial",
+          title: complete ? "导出完成" : "部分导出完成",
+          summary: complete
+            ? `本次 ${total} 篇会话已生成 ZIP（JSON＋Markdown）。`
+            : "已将可用内容生成 ZIP。列表扫描或部分内容不完整，请查看详情和包内 export-report.json。",
+          filename, details,
+          counts: [["本次会话", total + " 篇"], ["Markdown 成功", successCount + " 篇"],
+            ["JSON 已保存", jsonCount + " 篇"], ["Markdown 失败", (total - successCount) + " 篇"],
+            ["图片失败", failedImages + " 张"]],
+        };
         label.textContent = complete ? "✅ 完成" : "⚠️ 部分完成";
       } catch (err) {
         if (err.name !== "ExportCancelledError") console.error(err);
         const prefix = taskPhase === "listing" ? "加载会话列表失败" : "批量导出失败";
-        showToast(err.name === "ExportCancelledError" ? err.message : `${prefix}: ${err.message}`, err.name === "ExportCancelledError" ? "info" : "error");
+        if (err.name === "ExportCancelledError") showToast(err.message, "info");
+        else pendingResult = { kind: "error", title: prefix, summary: "本次未生成下载文件。", details: [err.message] };
         label.textContent = "⚠️ 出错";
       } finally {
         setBusy(false);
