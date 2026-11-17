@@ -1,0 +1,14 @@
+node_modules/
+.local/
+exports/
+backups/
+*.zip
+*.har
+*.log
+.env
+.env.*
+!.env.example
+cookies*.txt
+credentials*.json
+.DS_Store
+Thumbs.db

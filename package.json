@@ -1,0 +1,13 @@
+{
+  "name": "ai-chat-exporters",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal Tampermonkey builds for ChatGPT and Gemini exports",
+  "license": "MIT",
+  "scripts": {
+    "check": "node tools/check.cjs",
+    "test": "node tests/gemini.cjs",
+    "metadata": "node tools/check.cjs --write-metadata"
+  },
+  "engines": { "node": ">=20" }
+}

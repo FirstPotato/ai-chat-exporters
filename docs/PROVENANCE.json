@@ -1,0 +1,35 @@
+{
+  "preparedAt": "2026-11-17T12:57:45.543Z",
+  "chatgptReference": {
+    "name": "gptnew.txt",
+    "version": "1.3.6",
+    "sha256": "9af9d8a6f71849e3f0f0df0bb9ee0fb1fbda928967252733a8cb9ec8080dce86"
+  },
+  "chatgptAfterMetadataSha256": "09d8c8afa7eee602049d01a3a0f96323647afc984aa8dbb85191204526cb01c7",
+  "chatgptFunctionalContentUnchanged": true,
+  "bodyComparisonNormalization": "CRLF to LF; trailing EOF whitespace removed",
+  "chatgptRelease": {
+    "version": "1.3.6.1",
+    "sha256": "6698b7917f1359b3a795c4f0b347c45b23ff9b3509a07d70e35f1bc02eb6ba91"
+  },
+  "geminiRelease": {
+    "version": "2.1.0",
+    "sha256": "05160c43108adf3b6a47ebaf85c9c905a7f48c6f423118cbec0b72c47bd54717"
+  },
+  "checks": [
+    "Both observed list layouts accepted; unknown schemas and cursors rejected",
+    "Pagination follows cursors, deduplicates conversations, and records terminal page",
+    "Repeated cursor stops after two calls and marks export incomplete",
+    "Sidebar fallback stays partial and excludes external and other-account links",
+    "Requests retain captured account and page context during navigation",
+    "Full script creates UI; batch retains colliding short IDs, reports failures, and downloads partial archive",
+    "Zero successful conversations produces a failure report and never a success message",
+    "Search is case insensitive; date range includes full local end day and excludes unknown dates",
+    "Picker filters, selects, and exports only chosen conversation as JSON and Markdown",
+    "Cancelling picker creates no archive and restores controls",
+    "Raw JSON survives Markdown validation failure and is explicitly reported as JSON only",
+    "Images restricted to observed CDN schema, deduplicated, opt in, and reject HTML responses"
+  ],
+  "checksPassed": 12,
+  "limitations": "Synthetic responses and mock DOM/JSZip only; no live Gemini or Tampermonkey integration checked."
+}
