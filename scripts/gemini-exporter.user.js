@@ -2,7 +2,7 @@
 // @name         Gemini Universal Batch Exporter
 // @name:zh-CN   Gemini 通用导出器
 // @namespace    https://github.com/FirstPotato/ai-chat-exporters
-// @version      2.1.3
+// @version      2.1.4
 // @description  Export Gemini chats as Markdown and raw JSON with chat selection, optional images, and an export report.
 // @description:zh-CN  导出 Gemini 会话为 Markdown 和原始 JSON，支持选择会话、筛选、可选图片下载及导出报告。
 // @author       dikelps, Antigravity
@@ -1441,14 +1441,24 @@
     shadow.append(style, dock.style);
 
     let busy = false;
-    function setBusy(value) {
+    let taskPhase = "idle";
+    function setTaskPhase(phase) {
+      taskPhase = phase;
+      const captions = { idle: "导出", listing: "加载列表", selecting: "待选择", exporting: "导出中", packing: "打包中" };
+      const caption = captions[phase] || captions.idle;
+      dock.text.textContent = caption;
+      dock.launcher.setAttribute("aria-label", caption);
+      dock.launcher.title = caption;
+      // The picker has its own Cancel button while awaiting a selection.
+      stopButton.hidden = !busy || phase === "selecting";
+      stopButton.title = phase === "listing" ? "停止加载会话列表" : "停止本次导出，丢弃尚未下载的内容";
+    }
+    function setBusy(value, phase = "exporting") {
       busy = value;
       activeTask = value ? new pageWindow.AbortController() : null;
-      stopButton.hidden = !value;
       stopButton.disabled = false;
       stopButton.textContent = "停止";
-      dock.text.textContent = value ? "导出中" : "导出";
-      dock.launcher.setAttribute("aria-label", value ? "正在导出，点击查看菜单" : "导出");
+      setTaskPhase(value ? phase : "idle");
       for (const button of [exportCurrentBtn, exportBatchBtn, selectBtn]) button.disabled = value;
     }
 
@@ -1467,7 +1477,7 @@
         heading.textContent = "选择要导出的会话";
         const note = document.createElement("p");
         note.className = "picker-note";
-        note.textContent = scan.warnings.join(" ") || "日期按会话列表提供的时间筛选；时间未知的会话不参与日期筛选。";
+        note.textContent = "勾选会话后，点击“导出选中”开始导出。 " + (scan.warnings.join(" ") || "日期按会话列表提供的时间筛选；时间未知的会话不参与日期筛选。");
         const search = document.createElement("input");
         search.type = "search";
         search.placeholder = "搜索标题或 ID";
@@ -1650,8 +1660,8 @@
         return;
       }
 
-      setBusy(true);
-      const label = exportBatchBtn.querySelector(".label");
+      setBusy(true, "listing");
+      const label = selectMode ? selectBtn : exportBatchBtn.querySelector(".label");
       const task = activeTask;
 
       try {
@@ -1668,11 +1678,15 @@
         }
 
         if (selectMode) {
+          setTaskPhase("selecting");
+          label.textContent = "☑ 选择会话";
           conversations = await chooseConversations(scan);
           throwIfCancelled(task);
           if (!conversations?.length) { showToast("已取消，未导出任何会话。", "info"); return; }
         }
 
+        throwIfCancelled(task);
+        setTaskPhase("exporting");
         const zip = new JSZip();
         const total = conversations.length;
         let successCount = 0;
@@ -1748,6 +1762,7 @@
           scope: "原始历史 JSON 与经校验的 Markdown；可选下载已识别图片。文件附件及完整分支恢复未适配。",
           conversations: results,
         }, null, 2));
+        setTaskPhase("packing");
         label.textContent = "📦 正在压缩生成 ZIP...";
         const blob = await generateZip(zip, task, (percent) => {
           label.textContent = `正在生成 ZIP：${Math.round(percent)}%`;
@@ -1762,11 +1777,12 @@
         label.textContent = complete ? "✅ 完成" : "⚠️ 部分完成";
       } catch (err) {
         if (err.name !== "ExportCancelledError") console.error(err);
-        showToast(err.name === "ExportCancelledError" ? err.message : `批量导出失败: ${err.message}`, err.name === "ExportCancelledError" ? "info" : "error");
+        const prefix = taskPhase === "listing" ? "加载会话列表失败" : "批量导出失败";
+        showToast(err.name === "ExportCancelledError" ? err.message : `${prefix}: ${err.message}`, err.name === "ExportCancelledError" ? "info" : "error");
         label.textContent = "⚠️ 出错";
       } finally {
         setBusy(false);
-        label.textContent = "全部会话 ZIP";
+        label.textContent = selectMode ? "☑ 选择会话" : "全部会话 ZIP";
       }
     }
 
