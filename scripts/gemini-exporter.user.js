@@ -2,7 +2,7 @@
 // @name         Gemini Universal Batch Exporter
 // @name:zh-CN   Gemini 通用导出器
 // @namespace    https://github.com/FirstPotato/ai-chat-exporters
-// @version      2.1.2
+// @version      2.1.3
 // @description  Export Gemini chats as Markdown and raw JSON with chat selection, optional images, and an export report.
 // @description:zh-CN  导出 Gemini 会话为 Markdown 和原始 JSON，支持选择会话、筛选、可选图片下载及导出报告。
 // @author       dikelps, Antigravity
@@ -665,7 +665,73 @@
   const pageWindow =
     typeof unsafeWindow !== "undefined" ? unsafeWindow : globalThis;
 
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let activeTask = null;
+
+  function cancellationError() {
+    const error = new Error("已停止导出，未下载的内容已丢弃。");
+    error.name = "ExportCancelledError";
+    return error;
+  }
+
+  function throwIfCancelled(task = activeTask) {
+    if (task?.signal.aborted) throw cancellationError();
+  }
+
+  function onCancellation(task, callback) {
+    if (!task) return () => {};
+    if (task.signal.aborted) { callback(); return () => {}; }
+    task.signal.addEventListener("abort", callback, { once: true });
+    return () => task.signal.removeEventListener("abort", callback);
+  }
+
+  function sleep(ms) {
+    const task = activeTask;
+    throwIfCancelled(task);
+    return new Promise((resolve, reject) => {
+      let unsubscribe = () => {};
+      const timer = setTimeout(() => { unsubscribe(); resolve(); }, ms);
+      unsubscribe = onCancellation(task, () => { clearTimeout(timer); reject(cancellationError()); });
+    });
+  }
+
+  // Use JSZip's public stream API so stopping also pauses ZIP generation.
+  function generateZip(zip, task, onProgress) {
+    throwIfCancelled(task);
+    return new Promise((resolve, reject) => {
+      const stream = zip.generateInternalStream({ type: "uint8array", compression: "DEFLATE" });
+      let chunks = [];
+      let settled = false;
+      let unsubscribe = () => {};
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        stream.pause();
+        chunks = [];
+        unsubscribe();
+        reject(error);
+      };
+      unsubscribe = onCancellation(task, () => fail(cancellationError()));
+      stream.on("data", (chunk, metadata) => {
+        if (settled) return;
+        if (task.signal.aborted) { fail(cancellationError()); return; }
+        chunks.push(chunk);
+        onProgress?.(metadata.percent);
+      });
+      stream.on("error", fail);
+      stream.on("end", () => {
+        if (settled) return;
+        if (task.signal.aborted) { fail(cancellationError()); return; }
+        try {
+          const blob = new Blob(chunks, { type: "application/zip" });
+          chunks = [];
+          settled = true;
+          unsubscribe();
+          resolve(blob);
+        } catch (error) { fail(error); }
+      });
+      if (!settled) stream.resume();
+    });
+  }
 
   function captureExportContext() {
     return {
@@ -680,58 +746,86 @@
   }
 
   async function fetchText(endpoint, options) {
+    const task = activeTask;
+    throwIfCancelled(task);
     const controller = new pageWindow.AbortController();
+    const unsubscribe = onCancellation(task, () => controller.abort());
     options.signal = controller.signal;
     const timer = setTimeout(() => controller.abort(), 45_000);
     try {
       const response = await pageWindow.fetch(endpoint.toString(), options);
       if (!response.ok) throw new Error(`Gemini 请求失败 (HTTP ${response.status})`);
-      return await response.text();
+      const text = await response.text();
+      throwIfCancelled(task);
+      return text;
     } catch (error) {
+      throwIfCancelled(task);
       if (controller.signal.aborted) throw new Error("Gemini 请求超时（45 秒），请稍后重试。");
       throw error;
     } finally {
       clearTimeout(timer);
+      unsubscribe();
     }
   }
 
   function downloadImage(asset) {
+    const task = activeTask;
+    throwIfCancelled(task);
     return new Promise((resolve, reject) => {
       if (typeof GM_xmlhttpRequest !== "function") {
         reject(new Error("油猴未提供图片下载权限，请重新安装最新版脚本。"));
         return;
       }
       let request;
-      const limit = 30 * 1024 * 1024;
-      request = GM_xmlhttpRequest({
-        method: "GET", url: asset.url, responseType: "blob", timeout: 30000,
-        onprogress(event) {
-          if (event.loaded > limit || event.total > limit) {
-            reject(new Error("图片超过 30 MB 限制。"));
-            request?.abort();
-          }
-        },
-        onload(response) {
-          const blob = response.response;
-          if (response.status < 200 || response.status >= 300) {
-            reject(new Error(`图片请求失败 (HTTP ${response.status})`));
-          } else if (!blob || !/^image\//i.test(blob.type || "") || blob.size > limit) {
-            reject(new Error("图片内容类型异常或超过 30 MB 限制。"));
-          } else resolve(blob);
-        },
-        onerror: () => reject(new Error("图片网络请求失败。")),
-        ontimeout: () => reject(new Error("图片下载超时（30 秒）。")),
-        onabort: () => reject(new Error("图片下载已中止。")),
+      let settled = false;
+      let unsubscribe = () => {};
+      const finish = (error, blob) => {
+        if (settled) return;
+        settled = true;
+        unsubscribe();
+        if (error) reject(error); else resolve(blob);
+      };
+      unsubscribe = onCancellation(task, () => {
+        finish(cancellationError());
+        request?.abort();
       });
+      if (settled) return;
+      const limit = 30 * 1024 * 1024;
+      try {
+        request = GM_xmlhttpRequest({
+          method: "GET", url: asset.url, responseType: "blob", timeout: 30000,
+          onprogress(event) {
+            if (event.loaded > limit || event.total > limit) {
+              finish(new Error("图片超过 30 MB 限制。"));
+              request?.abort();
+            }
+          },
+          onload(response) {
+            if (task?.signal.aborted) { finish(cancellationError()); return; }
+            const blob = response.response;
+            if (response.status < 200 || response.status >= 300) {
+              finish(new Error(`图片请求失败 (HTTP ${response.status})`));
+            } else if (!blob || !/^image\//i.test(blob.type || "") || blob.size > limit) {
+              finish(new Error("图片内容类型异常或超过 30 MB 限制。"));
+            } else finish(null, blob);
+          },
+          onerror: () => finish(new Error("图片网络请求失败。")),
+          ontimeout: () => finish(new Error("图片下载超时（30 秒）。")),
+          onabort: () => finish(task?.signal.aborted ? cancellationError() : new Error("图片下载已中止。")),
+        });
+      } catch (error) { finish(error); }
     });
   }
 
   async function exportImages(zip, rawTurns, conversationId, enabled) {
+    const task = activeTask;
+    throwIfCancelled(task);
     const images = Core.collectImageAssets(rawTurns);
     const results = [];
     const extensions = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp",
       "image/gif": "gif", "image/avif": "avif", "image/bmp": "bmp", "image/svg+xml": "svg", "image/tiff": "tiff" };
     for (let index = 0; index < images.length; index++) {
+      throwIfCancelled(task);
       const asset = images[index];
       if (!enabled) {
         results.push({ ...asset, status: "not-requested" });
@@ -743,12 +837,14 @@
       }
       try {
         const blob = await downloadImage(asset);
+        throwIfCancelled(task);
         const extension = extensions[blob.type.toLowerCase().split(";")[0]];
         if (!extension) throw new Error("暂不支持此图片格式。");
         const filename = `images/${conversationId}_${index + 1}.${extension}`;
         zip.file(filename, blob);
         results.push({ ...asset, status: "downloaded", filename });
       } catch (error) {
+        throwIfCancelled(task);
         results.push({ ...asset, status: "failed", error: error.message });
       }
       await sleep(200);
@@ -956,6 +1052,8 @@
   }
 
   async function collectAllConversationIds(progressCallback, context) {
+    const task = activeTask;
+    throwIfCancelled(task);
     const all = [];
     const seen = new Set();
     const seenCursors = new Set();
@@ -989,6 +1087,7 @@
         await sleep(400);
       } while (cursor);
     } catch (err) {
+      throwIfCancelled(task);
       console.warn("[Gemini Exporter] RPC list failed, using sidebar fallback:", err);
       warnings.push(`列表扫描未完成：${err.message}。仅导出已发现的会话。`);
     }
@@ -1012,6 +1111,7 @@
   }
 
   function downloadFile(blob, filename) {
+    throwIfCancelled();
     const objectUrl = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = objectUrl;
@@ -1126,6 +1226,15 @@
     const style = document.createElement("style");
     style.textContent = `
         button { font: inherit; appearance: none; border: 0; cursor: pointer; }
+        .export-taskbar { display: flex; align-items: center; gap: 6px; }
+        .stop-export { min-height: 36px; padding: 0 12px; border-radius: 999px;
+          background: #fff1f2; color: #be123c; border: 1px solid #fecdd3;
+          font: 600 12px/1 system-ui, sans-serif; box-shadow: 0 3px 12px #0002; }
+        .stop-export[hidden] { display: none; }
+        .stop-export:hover { background: #ffe4e6; }
+        .stop-export:focus-visible { outline: 2px solid #be123c; outline-offset: 2px; }
+        .stop-export:disabled { opacity: .6; cursor: default; }
+        @media (pointer: coarse) { .stop-export { min-height: 44px; } }
         .panel {
           box-sizing: border-box;
           width: min(290px, calc(100vw - 32px));
@@ -1297,7 +1406,7 @@
     // 按钮 2：批量全量导出 (.zip)
     const exportBatchBtn = document.createElement("button");
     exportBatchBtn.className = "btn";
-    appendButtonLabel(exportBatchBtn, "📦", "批量导出 (ZIP)");
+    appendButtonLabel(exportBatchBtn, "📦", "全部会话 ZIP");
 
     const selectBtn = document.createElement("button");
     selectBtn.className = "btn";
@@ -1309,7 +1418,24 @@
     menuBtn.textContent = "导出设置";
     menuBtn.setAttribute("aria-expanded", "false");
 
-    control.append(exportCurrentBtn, exportBatchBtn, selectBtn, menuBtn);
+    exportBatchBtn.title = "导出扫描到的全部会话；只导出部分内容请选择“选择会话”";
+    control.append(exportCurrentBtn, selectBtn, exportBatchBtn, menuBtn);
+    const stopButton = document.createElement("button");
+    stopButton.type = "button";
+    stopButton.className = "stop-export";
+    stopButton.textContent = "停止";
+    stopButton.title = "停止本次导出，丢弃尚未下载的内容";
+    stopButton.hidden = true;
+    const taskbar = document.createElement("div");
+    taskbar.className = "export-taskbar";
+    taskbar.append(dock.launcher, stopButton);
+    stack.append(taskbar);
+    stopButton.addEventListener("click", () => {
+      if (!busy || !activeTask || activeTask.signal.aborted) return;
+      stopButton.disabled = true;
+      stopButton.textContent = "停止中";
+      activeTask.abort();
+    });
     stack.prepend(toast, panel);
     dock.onClose = () => { panel.hidden = true; menuBtn.setAttribute("aria-expanded", "false"); };
     shadow.append(style, dock.style);
@@ -1317,12 +1443,18 @@
     let busy = false;
     function setBusy(value) {
       busy = value;
+      activeTask = value ? new pageWindow.AbortController() : null;
+      stopButton.hidden = !value;
+      stopButton.disabled = false;
+      stopButton.textContent = "停止";
       dock.text.textContent = value ? "导出中" : "导出";
       dock.launcher.setAttribute("aria-label", value ? "正在导出，点击查看菜单" : "导出");
       for (const button of [exportCurrentBtn, exportBatchBtn, selectBtn]) button.disabled = value;
     }
 
     function chooseConversations(scan) {
+      const task = activeTask;
+      throwIfCancelled(task);
       return new Promise((resolve) => {
         const overlay = document.createElement("div");
         overlay.className = "picker-overlay";
@@ -1372,7 +1504,17 @@
         let filtered = scan.conversations;
         let visible = 100;
         let filterError = "";
-        const finish = (value) => { overlay.remove(); dock.launcher.focus(); resolve(value); };
+        let finished = false;
+        let unsubscribe = () => {};
+        const finish = (value) => {
+          if (finished) return;
+          finished = true;
+          unsubscribe();
+          overlay.remove();
+          dock.launcher.focus();
+          resolve(value);
+        };
+        unsubscribe = onCancellation(task, () => finish(null));
         const exportSelection = button("导出选中 (0)", () => {
           if (!selected.size || filterError) return;
           finish(scan.conversations.filter((item) => selected.has(item.id)));
@@ -1492,8 +1634,8 @@
         downloadFile(blob, filename);
         showToast(`✅ 导出成功！共 ${turns.length} 轮对话。`);
       } catch (err) {
-        console.error(err);
-        showToast(`导出失败: ${err.message}`, "error");
+        if (err.name !== "ExportCancelledError") console.error(err);
+        showToast(err.name === "ExportCancelledError" ? err.message : `导出失败: ${err.message}`, err.name === "ExportCancelledError" ? "info" : "error");
       } finally {
         setBusy(false);
         label.textContent = "当前会话 (.md)";
@@ -1510,6 +1652,7 @@
 
       setBusy(true);
       const label = exportBatchBtn.querySelector(".label");
+      const task = activeTask;
 
       try {
         const context = captureExportContext();
@@ -1526,7 +1669,8 @@
 
         if (selectMode) {
           conversations = await chooseConversations(scan);
-          if (!conversations?.length) return;
+          throwIfCancelled(task);
+          if (!conversations?.length) { showToast("已取消，未导出任何会话。", "info"); return; }
         }
 
         const zip = new JSZip();
@@ -1536,6 +1680,7 @@
         const results = [];
 
         for (let i = 0; i < total; i++) {
+          throwIfCancelled(task);
           const item = conversations[i];
           label.textContent = `📥 (${i + 1}/${total}) ${item.title.slice(0, 8)}...`;
 
@@ -1582,6 +1727,7 @@
             results.push({ ...item, status: "exported", filename: safeFileName,
               jsonFilename, turns: turns.length, diagnostics, images });
           } catch (itemErr) {
+            throwIfCancelled(task);
             console.warn(`[Gemini Exporter] 会话 ${item.id} 导出失败:`, itemErr);
             results.push({ ...item, status: jsonFilename ? "json-only" : "failed", jsonFilename, error: itemErr.message });
           }
@@ -1603,10 +1749,10 @@
           conversations: results,
         }, null, 2));
         label.textContent = "📦 正在压缩生成 ZIP...";
-        const blob = await zip.generateAsync({
-          type: "blob",
-          compression: "DEFLATE",
+        const blob = await generateZip(zip, task, (percent) => {
+          label.textContent = `正在生成 ZIP：${Math.round(percent)}%`;
         });
+        throwIfCancelled(task);
         const dateStr = new Date().toISOString().slice(0, 10);
         downloadFile(blob, `gemini_${complete ? "export" : "partial_export"}_${selectMode ? "selected_" : ""}${dateStr}.zip`);
         showToast(complete
@@ -1615,12 +1761,12 @@
           complete ? "success" : "error", 15000);
         label.textContent = complete ? "✅ 完成" : "⚠️ 部分完成";
       } catch (err) {
-        console.error(err);
-        showToast(`批量导出失败: ${err.message}`, "error");
+        if (err.name !== "ExportCancelledError") console.error(err);
+        showToast(err.name === "ExportCancelledError" ? err.message : `批量导出失败: ${err.message}`, err.name === "ExportCancelledError" ? "info" : "error");
         label.textContent = "⚠️ 出错";
       } finally {
         setBusy(false);
-        label.textContent = "批量导出 (ZIP)";
+        label.textContent = "全部会话 ZIP";
       }
     }
 
