@@ -13,7 +13,7 @@ FirstPotato 的两个油猴脚本：ChatGPT 导出器与 Gemini 导出器。通�
 
 ## GitHub 安装与更新
 
-以下链接在仓库上传到 `FirstPotato/ai-chat-exporters` 并设为公开后生效；本地整理完成不代表已经上传。
+公开仓库的安装链接如下。安装更新后刷新对应网站页面；旧版同类脚本请保持停用。
 
 - [安装 ChatGPT 导出器](https://raw.githubusercontent.com/FirstPotato/ai-chat-exporters/main/scripts/chatgpt-exporter.user.js)
 - [安装 Gemini 导出器](https://raw.githubusercontent.com/FirstPotato/ai-chat-exporters/main/scripts/gemini-exporter.user.js)
@@ -22,11 +22,11 @@ FirstPotato 的两个油猴脚本：ChatGPT 导出器与 Gemini 导出器。通�
 
 ## 功能
 
-| 项目 | ChatGPT 1.3.6.1 | Gemini 2.1.0 |
+| 项目 | ChatGPT 1.3.6.2 | Gemini 2.1.1 |
 |---|---|---|
-| 基础 | 用户指定的 `gptnew.txt`（上游 1.3.6），功能代码保持一致 | 原 Gemini 导出器核心 + 本地修复与扩展 |
+| 基础 | 用户指定的 `gptnew.txt`（上游 1.3.6）+ 选择界面改进 | 原 Gemini 导出器核心 + 本地修复与扩展 |
 | 范围 | 个人、项目、团队空间 | 当前登录 Google 账号可发现的会话 |
-| 选择 | 选择会话、搜索、日期/状态筛选 | 选择会话、标题/ID 搜索、日期筛选 |
+| 选择 | 选中行高亮、选择会话、搜索、日期/状态筛选 | 选择会话、标题/ID 搜索、日期筛选 |
 | 格式 | ZIP 内 JSON + Markdown | 当前会话 `.md`；批量/选中 ZIP 内原始 JSON + Markdown |
 | 资源 | 沿用上游图片/附件下载逻辑 | 默认关闭的图片下载尝试；文件附件未适配 |
 | 报告 | 沿用上游失败提示 | ZIP 内 `export-report.json`，记录列表扫描、每篇结果、图片结果 |

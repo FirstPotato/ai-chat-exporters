@@ -3,7 +3,7 @@
 // @name:zh-CN   ChatGPT 通用导出器（Markdown 支持）
 // @name:zh-TW   ChatGPT 通用匯出器（Markdown 支援）
 // @namespace    https://github.com/FirstPotato/ai-chat-exporters
-// @version      1.3.6.1
+// @version      1.3.6.2
 // @description  Export ChatGPT conversations from personal, project, and team workspaces to local ZIP archives with JSON, Markdown, and assets.
 // @description:zh-CN  将 ChatGPT 个人、项目和团队空间对话导出为本地 ZIP，包含 JSON、Markdown 和资源文件。
 // @description:zh-TW  將 ChatGPT 個人、專案和團隊工作區對話匯出為本機 ZIP，包含 JSON、Markdown 和資源檔案。
@@ -1888,7 +1888,7 @@
         dialog.id = 'export-dialog';
         Object.assign(dialog.style, {
             background: '#fff', padding: '24px', borderRadius: '12px',
-            boxShadow: '0 5px 15px rgba(0,0,0,.3)', width: '720px',
+            boxShadow: '0 5px 15px rgba(0,0,0,.3)', width: '720px', colorScheme: 'light',
             fontFamily: 'sans-serif', color: '#333', boxSizing: 'border-box'
         });
 
@@ -2056,6 +2056,20 @@
             state.visibleCount = state.pageSize;
         };
 
+        const updateSelectionSummary = () => {
+            const statusEl = dialog.querySelector('#conv-status');
+            const exportBtn = dialog.querySelector('#export-selected-btn');
+            const visibleCount = Math.min(state.visibleCount, state.filtered.length);
+            statusEl.textContent = t('status.listSummary', {
+                total: state.list.length,
+                filtered: state.filtered.length,
+                visible: visibleCount,
+                selected: state.selected.size
+            });
+            exportBtn.textContent = t('button.exportSelected', { count: state.selected.size });
+            exportBtn.disabled = state.loading || state.selected.size === 0;
+        };
+
         const renderList = () => {
             const statusEl = dialog.querySelector('#conv-status');
             const listEl = dialog.querySelector('#conv-list');
@@ -2074,14 +2088,7 @@
                 return;
             }
 
-            const visibleCount = Math.min(state.visibleCount, state.filtered.length);
-            statusEl.textContent = t('status.listSummary', {
-                total: state.list.length,
-                filtered: state.filtered.length,
-                visible: visibleCount,
-                selected: state.selected.size
-            });
-            exportBtn.textContent = t('button.exportSelected', { count: state.selected.size });
+            updateSelectionSummary();
 
             if (state.filtered.length === 0) {
                 const empty = document.createElement('div');
@@ -2098,19 +2105,32 @@
                 Object.assign(label.style, {
                     display: 'flex', gap: '8px', padding: '8px',
                     border: '1px solid #e5e7eb', borderRadius: '6px',
-                    marginBottom: '8px', cursor: 'pointer', alignItems: 'flex-start'
+                    marginBottom: '8px', cursor: 'pointer', alignItems: 'flex-start',
+                    color: '#1f2937'
                 });
 
                 const checkbox = document.createElement('input');
                 checkbox.type = 'checkbox';
                 checkbox.checked = state.selected.has(item.id);
+                Object.assign(checkbox.style, {
+                    accentColor: '#047857', width: '16px', height: '16px',
+                    flexShrink: '0', marginTop: '3px'
+                });
+                const updateSelectionStyle = () => {
+                    const selected = state.selected.has(item.id);
+                    label.style.backgroundColor = selected ? '#d1fae5' : '#fff';
+                    label.style.borderColor = selected ? '#059669' : '#e5e7eb';
+                    label.style.boxShadow = selected ? 'inset 3px 0 0 #059669' : 'none';
+                };
+                updateSelectionStyle();
                 checkbox.onchange = (e) => {
                     if (e.target.checked) {
                         state.selected.add(item.id);
                     } else {
                         state.selected.delete(item.id);
                     }
-                    renderList();
+                    updateSelectionStyle();
+                    updateSelectionSummary();
                 };
 
                 const content = document.createElement('div');

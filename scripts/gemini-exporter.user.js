@@ -2,7 +2,7 @@
 // @name         Gemini Universal Batch Exporter
 // @name:zh-CN   Gemini 通用导出器
 // @namespace    https://github.com/FirstPotato/ai-chat-exporters
-// @version      2.1.0
+// @version      2.1.1
 // @description  Export Gemini chats as Markdown and raw JSON with chat selection, optional images, and an export report.
 // @description:zh-CN  导出 Gemini 会话为 Markdown 和原始 JSON，支持选择会话、筛选、可选图片下载及导出报告。
 // @author       dikelps, Antigravity
@@ -1233,10 +1233,20 @@
     }));
     control.className = "control";
 
+    // Build labels without HTML parsing so Trusted Types cannot block startup.
+    function appendButtonLabel(button, iconText, labelText) {
+      const icon = document.createElement("span");
+      icon.textContent = iconText;
+      const label = document.createElement("span");
+      label.className = "label";
+      label.textContent = labelText;
+      button.append(icon, label);
+    }
+
     // 按钮 1：导出当前会话 (.md)
     const exportCurrentBtn = document.createElement("button");
     exportCurrentBtn.className = "btn";
-    exportCurrentBtn.innerHTML = `<span>📄</span><span class="label">当前会话 (.md)</span>`;
+    appendButtonLabel(exportCurrentBtn, "📄", "当前会话 (.md)");
 
     const sep = document.createElement("div");
     sep.className = "btn-sep";
@@ -1245,7 +1255,7 @@
     const exportBatchBtn = document.createElement("button");
     exportBatchBtn.className = "btn";
     exportBatchBtn.style.color = "#a8c7fa";
-    exportBatchBtn.innerHTML = `<span>📦</span><span class="label">批量导出 (ZIP)</span>`;
+    appendButtonLabel(exportBatchBtn, "📦", "批量导出 (ZIP)");
 
     const selectBtn = document.createElement("button");
     selectBtn.className = "btn";
@@ -1584,6 +1594,7 @@
 
   // 保证按钮在所有 Gemini 页面可见，如果不在具体会话中则禁用“单篇”
   function syncRoute() {
+    if (!ui.host.isConnected) document.documentElement.append(ui.host);
     ui.exportCurrentBtn.style.opacity = isConversationPage() ? "1" : "0.5";
     ui.exportCurrentBtn.title = isConversationPage()
       ? "导出当前打开的会话"
