@@ -2,7 +2,7 @@
 // @name         Gemini Universal Batch Exporter
 // @name:zh-CN   Gemini 通用导出器
 // @namespace    https://github.com/FirstPotato/ai-chat-exporters
-// @version      2.1.4
+// @version      2.1.5
 // @description  Export Gemini chats as Markdown and raw JSON with chat selection, optional images, and an export report.
 // @description:zh-CN  导出 Gemini 会话为 Markdown 和原始 JSON，支持选择会话、筛选、可选图片下载及导出报告。
 // @author       dikelps, Antigravity
@@ -1444,7 +1444,7 @@
     let taskPhase = "idle";
     function setTaskPhase(phase) {
       taskPhase = phase;
-      const captions = { idle: "导出", listing: "加载列表", selecting: "待选择", exporting: "导出中", packing: "打包中" };
+      const captions = { idle: "导出", listing: "加载列表", selecting: "导出", exporting: "导出中", packing: "打包中" };
       const caption = captions[phase] || captions.idle;
       dock.text.textContent = caption;
       dock.launcher.setAttribute("aria-label", caption);
