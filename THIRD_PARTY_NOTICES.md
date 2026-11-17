@@ -22,6 +22,6 @@
 
 ## 运行时依赖
 
-两个脚本通过 `@require` 使用 [JSZip 3.10.1](https://github.com/Stuk/jszip)，上游采用 MIT 或 GPLv3 双许可证。本仓库不内嵌 JSZip 源码；CDN 地址保留在用户脚本元数据内。
+两个脚本通过 `@require` 使用 [JSZip](https://github.com/Stuk/jszip)：ChatGPT 使用 3.10.1；Gemini 固定使用 3.9.1，以规避 3.10.x 在 Tampermonkey 沙箱中的调度挂起问题（[上游 #934](https://github.com/Stuk/jszip/issues/934)）。上游采用 MIT 或 GPLv3 双许可证。本仓库不内嵌 JSZip 源码；CDN 地址保留在用户脚本元数据内。
 
 原作者信息和许可证保留。ChatGPT/Gemini 名称属于相应服务；本项目并非官方产品。

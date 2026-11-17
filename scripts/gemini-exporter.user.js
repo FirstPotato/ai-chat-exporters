@@ -2,7 +2,7 @@
 // @name         Gemini Universal Batch Exporter
 // @name:zh-CN   Gemini 通用导出器
 // @namespace    https://github.com/FirstPotato/ai-chat-exporters
-// @version      2.1.6
+// @version      2.1.7
 // @description  Export Gemini chats as Markdown and raw JSON with chat selection, optional images, and an export report.
 // @description:zh-CN  导出 Gemini 会话为 Markdown 和原始 JSON，支持选择会话、筛选、可选图片下载及导出报告。
 // @author       dikelps, Antigravity
@@ -16,7 +16,7 @@
 // @match        https://gemini.google.com/app/*
 // @match        https://gemini.google.com/u/*/app
 // @match        https://gemini.google.com/u/*/app/*
-// @require      https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js
+// @require      https://cdnjs.cloudflare.com/ajax/libs/jszip/3.9.1/jszip.min.js
 // @run-at       document-idle
 // @grant        unsafeWindow
 // @grant        GM_getValue
@@ -694,28 +694,45 @@
     });
   }
 
-  // Use JSZip's public stream API so stopping also pauses ZIP generation.
+  // JSZip 3.9.1 avoids the 3.10.x setImmediate hang in Tampermonkey's sandbox.
+  // See https://github.com/Stuk/jszip/issues/934. Keep the public stream API
+  // so cancellation and a stalled output stream can both pause ZIP generation.
   function generateZip(zip, task, onProgress) {
     throwIfCancelled(task);
     return new Promise((resolve, reject) => {
       const stream = zip.generateInternalStream({ type: "uint8array", compression: "DEFLATE" });
       let chunks = [];
       let settled = false;
+      let stallTimer = null;
       let unsubscribe = () => {};
+      const cleanup = () => {
+        clearTimeout(stallTimer);
+        stallTimer = null;
+        unsubscribe();
+      };
       const fail = (error) => {
         if (settled) return;
         settled = true;
         stream.pause();
         chunks = [];
-        unsubscribe();
+        cleanup();
         reject(error);
+      };
+      const watchForStall = () => {
+        clearTimeout(stallTimer);
+        stallTimer = setTimeout(() => {
+          fail(new Error("ZIP 打包连续 60 秒没有输出，已中止，未下载的内容已丢弃。请刷新页面后重试；若仍失败，可减少会话数量或关闭图片下载。"));
+        }, 60000);
       };
       unsubscribe = onCancellation(task, () => fail(cancellationError()));
       stream.on("data", (chunk, metadata) => {
         if (settled) return;
         if (task.signal.aborted) { fail(cancellationError()); return; }
-        chunks.push(chunk);
-        onProgress?.(metadata.percent);
+        try {
+          chunks.push(chunk);
+          watchForStall();
+          onProgress?.(metadata.percent);
+        } catch (error) { fail(error); }
       });
       stream.on("error", fail);
       stream.on("end", () => {
@@ -725,11 +742,14 @@
           const blob = new Blob(chunks, { type: "application/zip" });
           chunks = [];
           settled = true;
-          unsubscribe();
+          cleanup();
           resolve(blob);
         } catch (error) { fail(error); }
       });
-      if (!settled) stream.resume();
+      if (!settled) {
+        watchForStall();
+        try { stream.resume(); } catch (error) { fail(error); }
+      }
     });
   }
 
