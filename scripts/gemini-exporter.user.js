@@ -2,7 +2,7 @@
 // @name         Gemini Universal Batch Exporter
 // @name:zh-CN   Gemini 通用导出器
 // @namespace    https://github.com/FirstPotato/ai-chat-exporters
-// @version      2.1.8
+// @version      2.1.9
 // @description  Export Gemini chats as Markdown and raw JSON with chat selection, optional images, and an export report.
 // @description:zh-CN  导出 Gemini 会话为 Markdown 和原始 JSON，支持选择会话、筛选、可选图片下载及导出报告。
 // @author       dikelps, Antigravity
@@ -471,7 +471,7 @@
       const lines = [`# ${safeTitle}`, ""];
       if (diagnostics.missing?.length) {
         lines.push(
-          `> ⚠️ 本会话有 ${diagnostics.missing.length} 处消息正文未能完整导出；下方已标出位置，原始响应保存在同名 JSON。`,
+          `> ⚠️ 本会话有 ${diagnostics.missing.length} 处轮次没有可导出的文字；下方已标出位置，原始响应保存在同名 JSON。请核对是否为图片、附件或缺少回复。`,
           "",
         );
       }
@@ -1804,7 +1804,7 @@
           const item = conversations[i];
           label.textContent = `📥 (${i + 1}/${total}) ${item.title.slice(0, 8)}...`;
           setProgress(`正在导出第 ${i + 1} / ${total} 篇`, item.title,
-            `已处理 ${i} 篇 · Markdown 成功 ${successCount} 篇`);
+            `已处理 ${i} 篇 · Markdown 已生成 ${markdownCount} 篇`);
 
           let jsonFilename = null;
           try {
@@ -1851,7 +1851,7 @@
             else successCount++;
             results.push({ ...item, status: incomplete ? "partial" : "exported", filename: safeFileName,
               jsonFilename, turns: turns.length, diagnostics, images,
-              ...(incomplete ? { error: `${diagnostics.missing.length} 处消息正文不完整，已在 Markdown 标注；详见同名 JSON。` } : {}) });
+              ...(incomplete ? { error: `${diagnostics.missing.length} 处轮次无文字，已在 Markdown 标注；请核对同名 JSON 或 Gemini 页面。` } : {}) });
           } catch (itemErr) {
             throwIfCancelled(task);
             console.warn(`[Gemini Exporter] 会话 ${item.id} 导出失败:`, itemErr);
@@ -1859,7 +1859,7 @@
           }
 
           setProgress(`已处理 ${i + 1} / ${total} 篇`, item.title,
-            `Markdown 完整 ${successCount} 篇 · 不完整 ${partialCount} 篇 · JSON ${jsonCount} 篇`);
+            `Markdown 已生成 ${markdownCount} 篇 · 需核对 ${partialCount} 篇 · JSON ${jsonCount} 篇`);
 
           // 防频控抖动延时 (类似 ChatGPT 导出的 Jitter)
           await sleep(500 + Math.random() * 300);
@@ -1875,15 +1875,15 @@
           exported: successCount, markdownSaved: markdownCount, markdownIncomplete: partialCount,
           jsonSaved: jsonCount, failed: total - markdownCount, failedImages,
           warnings: scan.warnings,
-          scope: "原始历史 JSON 与经校验的 Markdown；正文缺失时 Markdown 明确标注且计为不完整。可选下载已识别图片；文件附件及完整分支恢复未适配。",
+          scope: "原始历史 JSON 与经校验的 Markdown；无文字轮次会在 Markdown 标注并计为需核对。可选下载已识别图片；文件附件及完整分支恢复未适配。",
           conversations: results,
         }, null, 2));
         setTaskPhase("packing");
         label.textContent = "📦 正在压缩生成 ZIP...";
-        setProgress("正在生成 ZIP：0%", "", `共 ${total} 篇 · Markdown ${markdownCount} 篇（不完整 ${partialCount}）· JSON ${jsonCount} 篇`);
+        setProgress("正在生成 ZIP：0%", "", `共 ${total} 篇 · Markdown ${markdownCount} 篇（需核对 ${partialCount}）· JSON ${jsonCount} 篇`);
         const blob = await generateZip(zip, task, (percent) => {
           label.textContent = `正在生成 ZIP：${Math.round(percent)}%`;
-          setProgress(label.textContent, "", `共 ${total} 篇 · Markdown ${markdownCount} 篇（不完整 ${partialCount}）· JSON ${jsonCount} 篇`);
+          setProgress(label.textContent, "", `共 ${total} 篇 · Markdown ${markdownCount} 篇（需核对 ${partialCount}）· JSON ${jsonCount} 篇`);
         });
         throwIfCancelled(task);
         const dateStr = new Date().toISOString().slice(0, 10);
@@ -1895,19 +1895,22 @@
           const imageFailures = (result.images || []).filter(image => image.status === "failed");
           if (imageFailures.length) details.push(result.title + "：" + imageFailures.length + " 张图片未下载成功");
         }
+        const allFilesGenerated = markdownCount === total && jsonCount === total;
         pendingResult = {
           kind: complete ? "success" : "partial",
-          title: complete ? "导出完成" : "部分导出完成",
+          title: complete ? "导出完成" : allFilesGenerated ? "文件已生成，内容需核对" : "部分导出完成",
           summary: complete
             ? `本次 ${total} 篇会话已生成 ZIP（JSON＋Markdown）。`
-            : "已将可用内容生成 ZIP。列表扫描或部分内容不完整，请查看详情和包内 export-report.json。",
+            : allFilesGenerated
+              ? `本次 ${total} 篇的 JSON 与 Markdown 均已生成；${partialCount} 篇含无文字轮次。列表覆盖或会话内容请查看详情及包内报告。`
+              : "已将可用内容生成 ZIP；部分文件或内容需核对，请查看详情和包内 export-report.json。",
           filename, details,
-          counts: [["本次会话", total + " 篇"], ["Markdown 完整", successCount + " 篇"],
-            ["Markdown 不完整", partialCount + " 篇"], ["Markdown 失败", (total - markdownCount) + " 篇"],
+          counts: [["本次会话", total + " 篇"], ["Markdown 已生成", markdownCount + " 篇"],
+            ["含无文字轮次，需核对", partialCount + " 篇"], ["Markdown 未生成", (total - markdownCount) + " 篇"],
             ["JSON 已保存", jsonCount + " 篇"],
             ["图片失败", failedImages + " 张"]],
         };
-        label.textContent = complete ? "✅ 完成" : "⚠️ 部分完成";
+        label.textContent = complete ? "✅ 完成" : allFilesGenerated ? "📦 ZIP 已生成" : "⚠️ 部分完成";
       } catch (err) {
         if (err.name !== "ExportCancelledError") console.error(err);
         const prefix = taskPhase === "listing" ? "加载会话列表失败" : "批量导出失败";
